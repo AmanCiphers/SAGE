@@ -29,9 +29,14 @@ searches the web, controls the PC, and analyzes images.
 | `tasks.py` | SQLite store (`sage.db`), `TaskManager` (background worker threads), `Scheduler` (fires reminders/loops every 5s) |
 | `agent.py` | The agent core: `run_agent()` loop, tool registry (`ACTIONS`), persistent `repl()` |
 | `channels.py` | Output channels: console, Telegram (bi-directional), WhatsApp (send-only) |
-| `voice.py` | Optional voice: wake word (`openwakeword`), recording (`sounddevice`), transcription (`whisper`), TTS (macOS `say`) |
+| `voice.py` | Optional voice: wake word (custom-trained `sage` centroid), recording (`sounddevice`), STT via isolated subprocess, prompt scenarios, TTS (home server, macOS `say` fallback) |
+| `stt_worker.py` | Speech-to-text in a subprocess so native whisper crashes can never take down the server |
+| `record_wake_samples.py` | Record `sage` wake-word audio into `wake_data/sage/` |
+| `train_wake.py` | Train the `sage` centroid match model into `wake_models/sage.json` |
+| `render_prompts.py` | Render the 10 scenario prompt WAVs through the TTS server (or `--local` via macOS `say`) |
+| `scenarios/` | `scenarios.json` + WAV audio for ack/no-command/stall/timeout/thinking/tts-down/disabled/permission/task-done/reminder |
 | `sage.py` | Full harness entry point: scheduler + channels + voice + REPL |
-| `server.py` | FastAPI control API for the web UI (`/chat`, `/tasks`, `/reminders`, `/status`) |
+| `server.py` | FastAPI control API for the web UI (`/chat`, `/tasks`, `/reminders`, `/status`, `/voice/*`) |
 | `ui/` | Next.js + Tailwind web dashboard (monochrome terminal UI) |
 | `.env` | Secrets (see Setup) |
 
@@ -51,7 +56,7 @@ Tool results (exit codes, output, errors) are fed back so the model self-correct
 ## Setup
 
 1. `pip install requests` (mandatory). Optional: `python-telegram-bot`,
-   `openwakeword sounddevice numpy openai-whisper`.
+   `sounddevice numpy faster-whisper openai-whisper`.
 2. Create `.env` with:
    ```
    NVIDIA_API_KEY=your_key
@@ -62,10 +67,10 @@ Tool results (exit codes, output, errors) are fed back so the model self-correct
    # TELEGRAM_BOT_TOKEN=...          # chat with Sage from your phone
    # WHATSAPP_TOKEN=... / WHATSAPP_PHONE_ID=... / WHATSAPP_TO=...
    # SAGE_VOICE=1                    # enable wake-word voice loop
-   # SAGE_WAKE_WORD=jarvis
-   # SAGE_WHISPER_MODEL=tiny
-   # CHATTERBOX_URL=http://127.0.0.1:4123/v1/audio/speech  # TTS via Resemble Chatterbox
-   # CHATTERBOX_VOICE=alloy          # optional voice name
+   # SAGE_WAKE_WORD=sage             # wake word (custom model matches this)
+   # SAGE_WAKE_THRESHOLD=0.90        # override wake match threshold at runtime
+   # SAGE_WHISPER_MODEL=small        # STT model (small/base/tiny fallback chain)
+   # CHATTERBOX_URL=http://192.168.1.44:8000/tts  # home TTS: POST {"text": ...} -> WAV bytes
    ```
 3. The `.env` file is parsed automatically at import time — no sourcing needed.
 
@@ -111,8 +116,32 @@ hire a worker to run: sleep 3 && echo done            # worker
 what's the status of my tasks                          # task_status
 remind me in 20 seconds to drink water                # reminder (watch console)
 # with TELEGRAM_BOT_TOKEN set: message the bot "hey"   # Telegram
-# with SAGE_VOICE=1: say "jarvis", then a command      # voice
+# with SAGE_VOICE=1: say "sage", then a command        # voice
 ```
+
+## Custom wake word ("sage")
+
+The wake word is **not** the prebuilt `jarvis` model — it's a centroid match over
+a temporal log-mel representation, trained on your own recordings:
+
+```bash
+python3 record_wake_samples.py          # record ~15 clean "sage" takes -> wake_data/sage/
+python3 train_wake.py --data wake_data/sage --threshold 0.90 --out wake_models/sage.json
+```
+
+How detection works:
+
+1. Listen continuously; a voice **burst** is opened when audio RMS exceeds a low
+   threshold and closed after ~0.3s of silence (soft consonants are kept).
+2. A burst only counts if it lasts 0.25–1.3s (a word, not a sentence).
+3. The burst is compared to the trained centroid; a match above `threshold`
+   fires the wake word (silent re-arming for the two-frame debounce).
+
+This rejects normal chatter (no burst end), long sentences (too long), and
+vowel-like filler ("um", ~0.39 vs 0.90+ for real "sage" on the temporal feature).
+Tuning: raise/lower `--threshold`, or override at runtime with
+`SAGE_WAKE_THRESHOLD=0.95 python3 server.py`. Every match prints
+`[voice] wake match 'sage' score=... (threshold ...)`.
 
 ## Notes / limitations
 
@@ -120,11 +149,18 @@ remind me in 20 seconds to drink water                # reminder (watch console)
   worker step consumes one.
 - WhatsApp is send-only (the agent can notify you; you can't reply back through
   it without a Meta webhook).
-- The default wake word is the prebuilt `jarvis` model; a custom "Sage" wake
-  word requires training an `openwakeword` model (or Porcupine).
-- Voice TTS prefers a **Resemble Chatterbox** server (OpenAI-compatible
-  `POST /v1/audio/speech`, e.g. `chatterbox-tts-api` on port 4123). If it's not
-  reachable it falls back to macOS `say`. Set `CHATTERBOX_URL`/`CHATTERBOX_VOICE`
-  to point at your server and voice.
+- The wake word is a custom-trained `sage` centroid model — see "Custom wake
+  word" above. It fires on a 0.25–1.3s voice burst whose temporal log-mel
+  feature clears the threshold; general speech, fillers, and long sentences
+  are rejected.
+- Voice TTS prefers the home server (`POST /tts` with `{"text": ...}`
+  returning WAV bytes, e.g. `http://192.168.1.44:8000/tts`). If it's
+  unreachable the voice falls back to macOS `say` and plays the `tts_down`
+  prompt. The 10 scenario phrases (ack, no-command, stall, timeout, thinking,
+  tts-down, disabled, permission, task-done, reminder) are rendered from the
+  same server via `render_prompts.py`.
+- STT runs in an isolated subprocess (`stt_worker.py`) because Apple's Python
+  segfaults on native whisper inference in threads; the server supervises and
+  auto-restarts the worker. Transfer with a WAV path on stdin / JSON on stdout.
 - PC/voice features need macOS; some actions require accessibility permissions.
 - State persists in `sage.db` (SQLite) across restarts.

@@ -367,8 +367,11 @@ class VoiceLoop(threading.Thread):
         self.state = "off"
         self.sd = None
         self._turn_busy_until = 0.0
-        self._last_score = 0.0
-        self._onset_budget = 0.0
+        self._burst = np.empty(0, dtype=np.float32)
+        self._burst_len = 0
+        self._burst_open = False
+        self._burst_trail = 0.0
+        self._rearm = 0
 
     def _emit(self, kind, text=""):
         if self.sink:
@@ -388,26 +391,45 @@ class VoiceLoop(threading.Thread):
     def _detect(self, mic, wake):
         if _speech_locked() or time.time() < self._turn_busy_until:
             return False
+        if self._rearm > 0:
+            self._rearm -= 1
+            return True
+        if self.spot.ok:
+            frame = np.asarray(mic.recent(0.2), np.float32)
+            loud = (
+                float(np.sqrt(np.mean(frame ** 2))) / 32768.0 > 0.005
+            )
+            if loud:
+                self._burst_trail = 0.0
+                if not self._burst_open:
+                    self._burst_open = True
+                    self._burst = np.empty(0, dtype=np.float32)
+                    self._burst_len = 0
+                if len(self._burst) <= int(SR * 1.35):
+                    self._burst = np.concatenate([self._burst, frame])
+                self._burst_len += len(frame)
+                return False
+            if not self._burst_open:
+                return False
+            self._burst_trail += 0.2
+            if self._burst_trail < 0.3:
+                return False
+            self._burst_open = False
+            if not (int(SR * 0.25) <= self._burst_len <= int(SR * 1.3)):
+                return False
+            match = float(feature_of(self._burst) @ self.spot.centroid)
+            if match > self.spot.threshold:
+                print(
+                    f"[voice] wake match '{self.spot.name}' "
+                    f"score={match:.3f} burst={self._burst_len / SR:.2f}s "
+                    f"(threshold {self.spot.threshold:.2f})"
+                )
+                self._rearm = 1
+                return True
+            return False
         buf = mic.recent(1.0)
         rms = float(np.sqrt(np.mean(buf.astype(np.float32) ** 2))) / 32768.0
         if rms < max(self._floor * 1.5, 0.004):
-            return False
-        if self.spot.ok:
-            score = self.spot.score(buf)
-            fresh = self._last_score < self.spot.threshold - 0.02
-            self._last_score = score
-            if score > self.spot.threshold:
-                if fresh:
-                    self._onset_budget = 0.4
-                if self._onset_budget > 0:
-                    self._onset_budget -= 0.2
-                    print(
-                        f"[voice] wake match '{self.spot.name}' score={score:.3f} "
-                        f"(threshold {self.spot.threshold:.2f})"
-                    )
-                    return True
-                return False
-            self._onset_budget = 0.0
             return False
         if wake:
             preds = wake.predict(buf)
