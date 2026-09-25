@@ -1,0 +1,52 @@
+{
+  "ack": {
+    "phrase": "Yes, sir?",
+    "wav": "ack.wav",
+    "min_gap": 1.0
+  },
+  "no_command": {
+    "phrase": "I didn't catch that, sir. Do say again.",
+    "wav": "no_command.wav",
+    "min_gap": 2.0
+  },
+  "stall": {
+    "phrase": "My ears stalled for a moment, sir.",
+    "wav": "stall.wav",
+    "min_gap": 3.0
+  },
+  "timeout": {
+    "phrase": "Twenty seconds is generous, sir. I trimmed the silence.",
+    "wav": "timeout.wav",
+    "min_gap": 10.0
+  },
+  "thinking": {
+    "phrase": "Just a moment, sir.",
+    "wav": "thinking.wav",
+    "min_gap": 20.0
+  },
+  "tts_down": {
+    "phrase": "My voice server is unreachable, sir. You're hearing the Mac's voice for now.",
+    "wav": "tts_down.wav",
+    "min_gap": 20.0
+  },
+  "disabled": {
+    "phrase": "My custom wake word is offline, sir. Voice control is unavailable.",
+    "wav": "disabled.wav",
+    "min_gap": 0.0
+  },
+  "permission": {
+    "phrase": "I need microphone access, sir. Allow it in System Settings, then restart me.",
+    "wav": "permission.wav",
+    "min_gap": 5.0
+  },
+  "task_done": {
+    "phrase": "Task complete, sir.",
+    "wav": "task_done.wav",
+    "min_gap": 2.0
+  },
+  "reminder": {
+    "phrase": "A reminder, sir.",
+    "wav": "reminder.wav",
+    "min_gap": 2.0
+  }
+}

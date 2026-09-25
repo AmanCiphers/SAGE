@@ -1,0 +1,10 @@
+- talk naturally. (activation word just like "hey siri" it shall use,"Sage" as activation word).
+- run in background 24/7 with minimal resources.
+- task manager: suppose i give sage a task, he should assign that task to a worker (can be more than 1, acc to task) and i should still be able to talk with sage, even ask whats the progress of the task i assigned earlier.
+- Loops
+- telegram, whatsapp integration
+- should be able to use reminders, eg: remind me for when is my interview with xyz company, scchdelue meetings, etc (CRON jobs)
+- should be able to access internet, use browser.
+- should be able to control my PC.
+- use terminal
+- imgae analzation
