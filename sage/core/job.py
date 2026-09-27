@@ -10,17 +10,17 @@ class JobType(Enum):
 
 class JobStatus(Enum):
     CREATED = "created"
-    PLANNING = "planning"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
 class Job:
-    def __init__(self, request, job_type):
+    def __init__(self, request, job_type=JobType.GENERAL):
         self.request = request
         self.type = job_type
         self.status = JobStatus.CREATED
-        self.plan = []
         self.model = None
         self.complexity = None
+        self.result = None
+        self.error = None

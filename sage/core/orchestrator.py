@@ -1,45 +1,26 @@
-from sage.core.job import Job, JobStatus
-from sage.core.planner import Planner
-from sage.core.executor import Executor
-from sage.core.verifier import Verifier
-from sage.core.router import ModelRouter
 from sage.core.job_analyzer import Analyzer
+from sage.core.decision_maker import DecisionMaker
+from sage.core.handler import Handler
+from sage.core.hermes import Hermes
 
 
 class Orchestrator:
     def __init__(self):
-        self.planner = Planner()
-        self.executor = Executor()
-        self.verifier = Verifier()
-        self.router = ModelRouter()
         self.analyzer = Analyzer()
+        self.decision_maker = DecisionMaker()
+        self.handler = Handler()
+        self.hermes = Hermes()
 
-    def run(self, job):
-        
-        self.analyzer.analyze(job)
-        
-        job.status = JobStatus.PLANNING
-        job.plan = self.planner.create_plan(job)
-        print(f"Plan created for job: {job.request}")
-        
-        job.model = self.router.route(job)
-        print("Model selected for job:", job.model)
-          
-        job.status = JobStatus.RUNNING
-        
-        result = self.executor.execute(job)
-        
-        if not result.success:
-            job.status = JobStatus.FAILED
-            print(
-                f"Job '{job.request}' failed during execution. with error: {result.error}")
-            return
-        print("Execution result:", result.output)
+    def run(self, message):
+        analysis = self.analyzer.analyze(message)
 
-        verified = self.verifier.verify(result)
-        if verified:
-            job.status = JobStatus.COMPLETED
-            print(f"Job '{job.request}' has completed successfully.")
-        else:
-            job.status = JobStatus.FAILED
-            print(f"Job '{job.request}' has failed verification.")
+        decision = self.decision_maker.decide(
+            analysis,
+            message
+        )
+
+        if decision.type == "handle":
+            return self.handler.handle(message)
+
+        if decision.type == "delegate":
+            return self.hermes.run(decision.task)
