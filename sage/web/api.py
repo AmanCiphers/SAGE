@@ -86,9 +86,21 @@ def _turn(request):
     return history
 
 
-def _save_assistant(text):
-    if text:
-        db.add_message(conversation_id, "assistant", text)
+def _save_assistant(text, status=None):
+    """Persist the reply, but only when the turn actually answered.
+
+    A refusal stored as an assistant message conditions every later turn: the
+    model reads "I can't run shell commands" as how it has been behaving, and
+    carries it into the next, unrelated question. Only real answers belong in
+    the history the model is shown.
+    """
+    if not text:
+        return
+
+    if status is not None and status != JobStatus.COMPLETED.value:
+        return
+
+    db.add_message(conversation_id, "assistant", text)
 
 
 @app.get("/")
@@ -116,7 +128,7 @@ def chat(request: ChatRequest):
     history = _turn(request)
     job = orchestrator.run(request.message, conversation=history, surface="web")
 
-    _save_assistant(job.result)
+    _save_assistant(job.result, job.status)
 
     payload = {"response": job.result or "", "status": job.status.value}
 
@@ -192,7 +204,7 @@ def chat_stream(request: ChatRequest):
 
         if final is not None:
             try:
-                _save_assistant(final.get("response"))
+                _save_assistant(final.get("response"), final.get("status"))
             except Exception as error:
                 failure = f"could not persist reply: {type(error).__name__}: {error}"
         elif failure is None:
@@ -262,7 +274,7 @@ def chat_approve(request: ApprovalRequest):
         approved_command=pending.approved_command,
     )
 
-    _save_assistant(job.result)
+    _save_assistant(job.result, job.status)
 
     return {
         "status": job.status.value,

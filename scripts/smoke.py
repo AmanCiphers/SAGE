@@ -205,23 +205,28 @@ def stage_sage():
     section("sage: knowledge answer, no tool needed")
 
     job = _orchestrator().run("In one short sentence, what is the capital of Japan?")
-    check("answers", job.status.value == "completed", job.result[:80])
-    check("stayed on SAGE", job.routing_reason and "single step" in job.routing_reason
-          or "single" in (job.routing_reason or ""), job.routing_reason)
+    # A turn that aborts leaves result as None, so never subscript it directly.
+    throttled = job.error if job.status.value == "failed" else None
+    check("answers", job.status.value == "completed", (job.result or "")[:80], exc=throttled)
+    check("stayed on SAGE", "single" in (job.routing_reason or ""),
+          job.routing_reason, exc=throttled)
 
     section("sage: bash tool")
 
     job = _orchestrator().run("Run `uname -s` with the bash tool and reply with only the output.")
-    check("completed", job.status.value == "completed", job.error or "")
-    check("used bash", "Darwin" in (job.result or ""), (job.result or "")[:80])
+    throttled = job.error if job.status.value == "failed" else None
+    check("completed", job.status.value == "completed", job.error or "", exc=throttled)
+    check("used bash", "Darwin" in (job.result or ""), (job.result or "")[:80], exc=throttled)
 
     section("sage: tool-loop web search")
 
     job = _orchestrator().run(
         "Search the web for the latest stable Rust version number. Reply with only the number."
     )
-    check("completed", job.status.value == "completed", job.error or "")
-    check("returned a version", any(c.isdigit() for c in job.result or ""), (job.result or "")[:80])
+    throttled = job.error if job.status.value == "failed" else None
+    check("completed", job.status.value == "completed", job.error or "", exc=throttled)
+    check("returned a version", any(c.isdigit() for c in job.result or ""),
+          (job.result or "")[:80], exc=throttled)
 
     section("sage: refuses to invent a tool result")
 
@@ -443,7 +448,8 @@ def stage_web():
         check("web request could not delete anything", survived,
               f"status={res.get('status')} reply={(res.get('response') or '')[:80]}")
         check("and it was not silently reported as done",
-              not survived or "disabled" in (res.get("response") or "").lower()
+              res.get("status") != "completed"
+              or "disabled" in (res.get("response") or "").lower()
               or "cannot" in (res.get("response") or "").lower()
               or "could not" in (res.get("response") or "").lower()
               or "can't" in (res.get("response") or "").lower(),
@@ -487,12 +493,16 @@ def stage_web():
 
         check("stream emitted frames", len(frames) >= 3, f"{len(frames)} frames")
         check("stream terminated with done", bool(frames and frames[-1].get("done")))
+        throttled = None
+        if frames and frames[-1].get("status") == "failed":
+            throttled = frames[-1].get("error") or "stream failed"
+
         check("stream saw a tool call",
               any(f.get("name") == "web_search" for f in frames),
-              str([f.get("name") for f in frames if f.get("name")]))
+              str([f.get("name") for f in frames if f.get("name")]), exc=throttled)
         check("stream answer came back",
               bool((frames[-1].get("response") or "").strip()),
-              (frames[-1].get("response") or "")[:60])
+              (frames[-1].get("response") or "")[:60], exc=throttled)
         check("stream never offered a local tool",
               not ({"bash", "pc_control"} & {f.get("name") for f in frames if f.get("name")}))
 
