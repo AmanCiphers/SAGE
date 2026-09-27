@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>SAGE</title>
+
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <main class="app">
+
+        <header class="header">
+            <div class="brand">
+                <div class="logo">S</div>
+
+                <div>
+                    <h1>SAGE</h1>
+                    <span>Personal Intelligence</span>
+                </div>
+            </div>
+
+            <div class="status">
+                <span class="status-dot"></span>
+                Online
+            </div>
+        </header>
+
+
+        <section id="chat" class="chat">
+            <div class="welcome">
+                <div class="welcome-logo">S</div>
+
+                <h2>Good evening, Aman.</h2>
+
+                <p>
+                    I'm SAGE. What are we working on?
+                </p>
+            </div>
+        </section>
+
+
+        <form id="chat-form" class="composer">
+
+            <textarea id="message" placeholder="Message SAGE..." rows="1" autocomplete="off"></textarea>
+
+            <button type="submit" id="send">
+                ↑
+            </button>
+
+        </form>
+
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>
