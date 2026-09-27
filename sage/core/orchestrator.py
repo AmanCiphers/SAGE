@@ -6,7 +6,7 @@ from sage.core.hermes import Hermes, ApprovalRequired
 from sage.core.job import Job, JobStatus
 from sage.core.job_analyzer import Analyzer
 from sage.core.decision_maker import DecisionMaker
-from sage.core.verifier import Verifier
+from sage.core.verifier import RETRYABLE_PREFIX, Verifier
 from sage.core.approvals import PendingApproval, registry as approval_registry
 
 
@@ -196,6 +196,7 @@ class Orchestrator:
                             model=decision.model,
                             surface=surface,
                             approved_command=approved_command,
+                            conversation_id=self.conversation_id,
                         ):
                             if event["type"] == "text":
                                 chunks.append(event["delta"])
@@ -257,7 +258,7 @@ class Orchestrator:
                     job.result = "".join(chunks)
                     ok, why = self.verifier.check(job.result, tools_used=tools_used)
 
-                    if ok or attempt == 2 or "no tool ran" not in why:
+                    if ok or attempt == 2 or RETRYABLE_PREFIX not in why:
                         verified, reason = ok, why
                         break
 
@@ -266,9 +267,9 @@ class Orchestrator:
                     # task description, so the correction has to be built there.
                     attempt_request = (
                         f"{job.request}\n\nYour previous answer described doing "
-                        f"something but no tool was called, so it did not happen. "
-                        f"Use a tool to actually do it, or say plainly that you "
-                        f"did not."
+                        f"something instead of doing it, so nothing happened. Use a "
+                        f"tool to actually do the work now, or say plainly that you "
+                        f"did not do it."
                     )
                     chunks, tools_used = [], set()
 

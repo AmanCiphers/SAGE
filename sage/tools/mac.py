@@ -29,9 +29,38 @@ _ACTIONS = (
     "sleep",
     "lock",
     "screenshot",
+    "type_text",
+    "press_key",
+    "read_window",
+    "frontmost_app",
 )
 
+# Keys worth sending by name. Anything else would have to be typed literally,
+# and a wrong name silently does nothing, so the list stays explicit.
+_KEYS = {
+    "return": 36,
+    "tab": 48,
+    "space": 49,
+    "delete": 51,
+    "escape": 53,
+    "up": 126,
+    "down": 125,
+    "left": 123,
+    "right": 124,
+    "cmd+a": 0,
+    "cmd+v": 9,
+    "cmd+c": 8,
+    "cmd+w": 13,
+    "cmd+q": 12,
+    "cmd+t": 17,
+    "cmd+n": 45,
+}
+
 AUDIT_PATH = os.environ.get("SAGE_AUDIT_LOG", os.path.join(tempfile.gettempdir(), "sage_tool_audit.log"))
+
+# Terminal scrollback can be enormous, and the whole thing lands in the model's
+# context.
+MAX_OUTPUT_CHARS = 4000
 
 
 def audit(entry):
@@ -133,6 +162,51 @@ def _command_for(action, target, browser):
         path = _plain(target, "target") if target else os.path.join(tempfile.gettempdir(), "sage_screenshot.png")
         return ["screencapture", "-x", path]
 
+    if action == "frontmost_app":
+        return _osa(
+            'tell application "System Events" to return name of first application '
+            "process whose frontmost is true"
+        )
+
+    if action == "type_text":
+        # Keystroke simulation, so this needs Accessibility permission for the
+        # terminal process. The alternative -- `do script` in Terminal -- avoids
+        # that but only works for Terminal, and cannot type into anything else.
+        text = str(target or "")
+        if not text:
+            raise ValueError("target is required: the text to type")
+        if len(text) > 4096:
+            raise ValueError("target is too long")
+
+        script = f'tell application "System Events" to keystroke "{_osa_string(text)}"'
+        return _osa(script)
+
+    if action == "press_key":
+        key = str(target or "").strip().lower()
+        if key not in _KEYS:
+            raise ValueError(f"key must be one of {', '.join(sorted(_KEYS))}")
+
+        return _osa(f'tell application "System Events" to key code {_KEYS[key]}')
+
+    if action == "read_window":
+        # Read what the frontmost window is showing, so a typed command's output
+        # can be checked rather than assumed. Terminal is scripted through its
+        # own dictionary because System Events exposes only a window reference,
+        # not the text inside it.
+        app = str(target or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9 ._]*", app):
+            raise ValueError(f"unsupported app name: {app!r}")
+
+        if app and app.lower() != "terminal":
+            raise ValueError(
+                f"read_window can only read Terminal, not {app!r}; "
+                "use bash or a screenshot for other apps"
+            )
+
+        return _osa(
+            'tell application "Terminal" to return contents of selected tab of front window'
+        )
+
     raise ValueError(f"unknown action '{action}'")
 
 
@@ -154,9 +228,38 @@ def pc_control(action, target=None, browser=None):
     except subprocess.TimeoutExpired:
         return {"action": action, "ok": False, "error": "timed out after 60s"}
 
+    # AppleScript answers on stdout. Without this, read_window and speak
+    # returned an empty result and the caller could not tell success from a
+    # silent no-op.
+    output = (proc.stdout or "").strip()
+
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    stderr = proc.stderr.strip()[:500]
+
+    # osascript reports a missing Accessibility grant as a generic failure. Left
+    # raw, the model retries the same call and then tells the user the action is
+    # impossible, which is the part that is actually fixable.
+    if "not allowed to send keystrokes" in stderr or "(-1002)" in stderr or "1002" in stderr:
+        return {
+            "action": action,
+            "ok": False,
+            "exit_code": proc.returncode,
+            "output": output,
+            "error": (
+                "macOS has not granted this process Accessibility permission, so "
+                "keystrokes cannot be sent. Grant it in System Settings > Privacy & "
+                "Security > Accessibility for the app running SAGE (Terminal or your "
+                "terminal emulator). To run a command, use the bash tool instead -- it "
+                "needs no permission."
+            ),
+        }
+
     return {
         "action": action,
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "stderr": proc.stderr.strip()[:500],
+        "output": output,
+        "stderr": stderr,
     }

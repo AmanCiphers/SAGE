@@ -2,7 +2,7 @@
 
 import pytest
 
-from sage.core.verifier import Verifier
+from sage.core.verifier import RETRYABLE_PREFIX, Verifier
 
 ANSWERS = [
     "Darwin",
@@ -126,3 +126,45 @@ class TestFabricatedResult:
         # Callers that do not track tools keep the old behaviour rather than
         # having every answer judged against an empty set.
         assert Verifier().check("Terminal opened.")[0]
+
+
+class TestDeferredToUser:
+    """Running nothing and telling the user to do it is a failed turn.
+
+    This is the loophole that let "I don't have access to your IP address, run
+    this in Terminal" pass as a completed answer, get stored, and then colour
+    every later reply.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "I don't have access to your IP address. Run this in Terminal:\n"
+        "curl ifconfig.me",
+        "You will need to run this yourself:\n```bash\ncurl ifconfig.me\n```",
+        "I can't read that file for you. You should run `cat` on it.",
+        "I am unable to open that app. Do this yourself instead.",
+    ])
+    def test_deferral_without_a_tool_is_rejected(self, text):
+        ok, reason = Verifier().check(text, tools_used=set())
+
+        assert not ok
+        assert reason.startswith(RETRYABLE_PREFIX)
+
+    @pytest.mark.parametrize("text", [
+        # Quoting a command after actually running something is fine.
+        "Your public IP is 45.115.179.166. To check it yourself, run "
+        "`curl ifconfig.me`.",
+        # Genuine guidance, no action implied.
+        "To find your IP, run `ipconfig getifaddr en0` in a terminal.",
+        "Here's how to open Terminal: press Cmd+Space and type Terminal.",
+    ])
+    def test_quoting_instructions_after_a_real_result_passes(self, text):
+        assert Verifier().check(text, tools_used={"bash"})[0]
+
+    def test_deferral_is_retryable(self):
+        # The orchestrator retries exactly on this prefix, so the model gets one
+        # chance to actually do the work.
+        ok, reason = Verifier().check("You will need to run this yourself.",
+                                      tools_used=set())
+
+        assert not ok
+        assert reason.startswith(RETRYABLE_PREFIX)

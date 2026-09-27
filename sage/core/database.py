@@ -191,6 +191,34 @@ class Database:
 
             self.connection.commit()
 
+    def user_messages(self, conversation_id, limit=20):
+        """User turns only, newest last, numbered from 1.
+
+        Questions like "what was my second message" need ordinals the model
+        cannot reliably count by eye, and assistant turns in the way make the
+        counting worse.
+        """
+        with self.lock:
+            cursor = self.connection.execute(
+                """
+                    SELECT content FROM messages
+                    WHERE conversation_id = ? AND role = 'user'
+                    ORDER BY id ASC
+                """,
+                (conversation_id,),
+            )
+            rows = cursor.fetchall()
+
+        turns = [{"n": i, "message": row[0]} for i, row in enumerate(rows[-limit:], 1)]
+
+        # Number relative to the whole conversation, not the window.
+        offset = len(rows) - len(turns)
+
+        for turn in turns:
+            turn["n"] += offset
+
+        return turns
+
     def get_messages(self, conversation_id):
         with self.lock:
             cursor = self.connection.execute(

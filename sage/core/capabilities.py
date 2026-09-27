@@ -6,10 +6,13 @@ either side gained a capability. It is generated from these lists instead.
 """
 
 SAGE_CAPABILITIES = [
-    ("bash", "run a single shell command, read or write files, run tests, inspect the repo"),
+    ("bash", "run a shell command directly on this machine: files, tests, git, "
+             "processes, disk and system info, and the network via curl "
+             "(your IP address, a HEAD request, downloading a file)"),
     ("web_search", "look something up on the web cheaply, in one call"),
     ("fetch_url", "read one specific page the user named"),
-    ("pc_control", "open an app or URL, set volume, notify, speak, screenshot, lock"),
+    ("pc_control", "open an app or URL, type into the frontmost app, read the "
+                   "Terminal window, set volume, notify, speak, screenshot, lock"),
     ("describe_image", "look at a screenshot or image file"),
     ("create_task", "hand a long goal to a background worker"),
     ("task_status", "check on background work"),
@@ -47,6 +50,14 @@ SAGE_ONE_STEP = (
     "before you have tried it."
 )
 
+# Only meaningful where bash exists. On a surface without it, telling the model
+# to reach for bash is just a more specific way to mislead it.
+SAGE_LOCAL_TOOLS_NOTE = (
+    "bash runs commands on this machine directly, so never tell the user to open a "
+    "terminal or run a command themselves when you could run it with bash. Opening an "
+    "app with pc_control does not mean the user has to type into it."
+)
+
 
 def _lines(capabilities):
     return "\n".join(f"- {name}: {description}" for name, description in capabilities)
@@ -58,9 +69,14 @@ def sage_prompt(surface="cli", local_tools=True):
     if not local_tools:
         available = [c for c in SAGE_CAPABILITIES if c[0] not in ("bash", "pc_control")]
 
+    guidance = SAGE_ONE_STEP
+
+    if local_tools:
+        guidance = f"{guidance}\n{SAGE_LOCAL_TOOLS_NOTE}"
+
     return (
         f"You can handle these yourself:\n{_lines(available)}\n\n"
-        f"{SAGE_ONE_STEP}"
+        f"{guidance}"
     )
 
 

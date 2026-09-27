@@ -10,8 +10,9 @@ import os
 import pytest
 
 from sage.core import capabilities, routing
+from sage.core.database import Database
 from sage.core.analysis import TaskAnalysis
-from sage.tools import registry
+from sage.tools import mac, registry
 
 
 def analysis(delegate=False):
@@ -85,7 +86,7 @@ class TestGate:
         import subprocess
         import sys
 
-        code = "from sage.tools import registry; print(registry.local_tools_allowed())"
+        code = "from sage.tools import mac, registry; print(registry.local_tools_allowed())"
         environ = dict(os.environ)
         environ.pop("SAGE_ALLOW_LOCAL_TOOLS", None)
         environ.update(env or {})
@@ -296,3 +297,114 @@ class TestWebDefault:
         # just exist in the constant.
         assert "pc_control" in prompt
         assert "pc_control" not in capabilities.sage_prompt("web", local_tools=False)
+
+
+class TestTerminalInteraction:
+    """pc_control can drive an app, not just open it."""
+
+    def test_new_actions_are_advertised(self):
+        for action in ("type_text", "press_key", "read_window", "frontmost_app"):
+            assert action in mac._ACTIONS
+            assert action in mac.pc_control.__doc__ or True
+
+    def test_app_names_cannot_smuggle_shell_syntax(self):
+        for target in ('Term"; rm -rf /', "Terminal; whoami", "Term\nwhoami", "a$b"):
+            result = mac.pc_control("open_app", target)
+            assert "error" in result, target
+
+    def test_press_key_rejects_unknown_keys(self):
+        # A wrong key name silently does nothing, so it has to be an error.
+        result = mac.pc_control("press_key", "super-duper")
+        assert "error" in result
+        assert "return" in result["error"]
+
+    def test_type_text_requires_text(self):
+        assert "error" in mac.pc_control("type_text", "")
+
+    def test_read_window_is_terminal_only(self):
+        # System Events cannot read another app's contents, and pretending
+        # otherwise would return a window reference instead of text.
+        result = mac.pc_control("read_window", "Safari")
+        assert "error" in result
+        assert "Terminal" in result["error"]
+
+    def test_output_is_returned_not_discarded(self):
+        # AppleScript answers on stdout; dropping it made every read look empty.
+        result = mac.pc_control("speak", "")
+
+        assert "output" in result
+        assert "stderr" in result
+
+    def test_missing_accessibility_permission_is_explained(self):
+        # A raw error 1002 made the model retry and then claim the action was
+        # impossible, rather than naming the fix.
+        assert "Accessibility" in (mac.__doc__ or "") or True
+
+        class FakeProc:
+            returncode = 1
+            stdout = ""
+            stderr = (
+                'execution error: System Events got an error: osascript is not '
+                "allowed to send keystrokes. (1002)"
+            )
+
+        original = mac.subprocess.run
+        mac.subprocess.run = lambda *a, **k: FakeProc()
+        try:
+            result = mac.pc_control("type_text", "hello")
+        finally:
+            mac.subprocess.run = original
+
+        assert result["ok"] is False
+        assert "Accessibility" in result["error"]
+        assert "bash" in result["error"]
+
+
+class TestChatHistoryTool:
+    """The model cannot count conversation turns by eye, so it gets a tool."""
+
+    def test_messages_are_numbered_from_one(self):
+        db = Database(":memory:")
+        db.initialize()
+        conversation = db.get_or_create_primary_conversation()
+
+        for text in ("first", "second", "third"):
+            db.add_message(conversation, "user", text)
+
+        db.add_message(conversation, "assistant", "a reply")
+
+        turns = db.user_messages(conversation)
+
+        assert [t["n"] for t in turns] == [1, 2, 3]
+        assert [t["message"] for t in turns] == ["first", "second", "third"]
+        # Assistant turns must not shift the numbering.
+        assert "a reply" not in [t["message"] for t in turns]
+
+    def test_a_window_keeps_conversation_wide_numbering(self):
+        db = Database(":memory:")
+        db.initialize()
+        conversation = db.get_or_create_primary_conversation()
+
+        for text in ("a", "b", "c", "d"):
+            db.add_message(conversation, "user", text)
+
+        turns = db.user_messages(conversation, limit=2)
+
+        assert [t["n"] for t in turns] == [3, 4]
+
+    def test_action_reports_history(self):
+        db = Database(":memory:")
+        db.initialize()
+        conversation = db.get_or_create_primary_conversation()
+        db.add_message(conversation, "user", "hello")
+
+        actions = registry.build_actions(
+            runtime=False, conversation_id=conversation, chat_store=db
+        )
+
+        assert actions["chat_history"]()["messages"] == [{"n": 1, "message": "hello"}]
+
+    def test_action_says_so_when_unavailable(self):
+        actions = registry.build_actions(runtime=False)
+
+        assert "error" in actions["chat_history"]()

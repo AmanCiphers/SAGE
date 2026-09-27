@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from sage.core.database import Database
+from sage.core.handler import Handler
 from sage.core.job import JobStatus
 from sage.core.llm import DEFAULT_MODEL
 from sage.core.orchestrator import Orchestrator
@@ -54,10 +55,13 @@ def _notify(reminder):
 
 # Built early so the scheduler can deliver reminders fired later, and so the
 # tool table the handler builds is the same runtime the API reports on.
-get_runtime(notify=_notify)
+task_store, task_manager, _ = get_runtime(notify=_notify)
 
 orchestrator = Orchestrator(
-    surface="web", local_tools=LOCAL_TOOLS, store=db, conversation_id=conversation_id
+    surface="web", local_tools=LOCAL_TOOLS, store=db, conversation_id=conversation_id,
+    handler=Handler(
+        task_store=task_store, task_manager=task_manager, chat_store=db
+    ),
 )
 
 

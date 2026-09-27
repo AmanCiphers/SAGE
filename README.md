@@ -78,14 +78,21 @@ The suite is fully mocked — no NVIDIA, Tavily, or HERMES calls.
 
 ## Tools
 
-`bash`, `web_search`, `fetch_url`, `pc_control`, `describe_image`,
+`bash`, `web_search`, `fetch_url`, `pc_control`, `describe_image`, `chat_history`,
 `create_task`, `task_status`, `create_reminder`, `start_loop`, `cancel_loop`.
 
 `bash` and `pc_control` are arbitrary execution and full desktop control, so
 they are on by default everywhere, so a request can actually be carried out;
 set `SAGE_ALLOW_LOCAL_TOOLS=0` to lock them down, and while they are off a web
 request is never delegated to HERMES either. `pc_control` builds argv lists and escapes AppleScript literals;
-it never interpolates a target into a shell string.
+it never interpolates a target into a shell string. It can `open_app`,
+`type_text`, `press_key`, `read_window` (Terminal scrollback) and report the
+`frontmost_app`, so an app can be driven and its output checked. Keystroke
+actions need macOS Accessibility permission for whatever app runs SAGE; without
+it you get an error saying so rather than a silent no-op. `read_window` is
+Terminal-only, because System Events exposes no way to read another app's
+contents. For running a command, `bash` is the right tool — it needs no
+permission and returns the output directly.
 
 ## Approvals
 

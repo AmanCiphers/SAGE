@@ -80,9 +80,13 @@ PC_SPEC = {
         "name": "pc_control",
         "description": (
             "Control the user's Mac. Actions: open_app (target=app name), open_url "
-            "(target=url, optional browser=Safari/Chrome/Edge/Firefox), volume (target=0-100), "
+            "(target=url, optional browser=Safari/Chrome/Edge/Firefox), type_text "
+            "(target=text to type into the frontmost app), press_key (target=return/"
+            "tab/escape/arrow/cmd+key), read_window (target=Terminal, returns what "
+            "the terminal is showing), frontmost_app, volume (target=0-100), "
             "mute, unmute, notify (target=message), speak (target=text), sleep, lock, "
-            "screenshot (target=optional output path)."
+            "screenshot (target=optional output path). To run a shell command use "
+            "bash instead of typing into an app."
         ),
         "parameters": {
             "type": "object",
@@ -193,7 +197,30 @@ REMINDER_SPECS = [
 
 LOCAL_TOOLS = ("bash", "pc_control")
 
-_specs = [BASH_SPEC, SEARCH_SPEC, FETCH_SPEC, PC_SPEC, VISION_SPEC, *TASK_SPECS, *REMINDER_SPECS]
+CHAT_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "chat_history",
+        "description": (
+            "List the user's own messages in this conversation, numbered from 1 in "
+            "the order they were sent. Use it whenever a question turns on which "
+            "message came first, second, or earlier -- do not count from memory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "How many of the most recent messages to return.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+_specs = [BASH_SPEC, SEARCH_SPEC, FETCH_SPEC, PC_SPEC, VISION_SPEC, CHAT_SPEC,
+          *TASK_SPECS, *REMINDER_SPECS]
 SPECS = [spec for spec in _specs if spec["function"]["name"] not in LOCAL_TOOLS]
 ALL_SPECS = list(_specs)
 
@@ -234,7 +261,26 @@ def _web_search(query, num_results=5):
     return {"query": query, "provider": found.get("provider"), "results": found["results"]}
 
 
-def build_actions(manager=None, store=None, runtime=True):
+def chat_history(store, conversation_id, limit=None):
+    """Return the user's numbered messages for the conversation in play."""
+    if store is None or conversation_id is None or not hasattr(store, "user_messages"):
+        return {"error": "chat history is not available on this surface"}
+
+    try:
+        count = max(1, min(int(limit), 100)) if limit else 20
+    except (TypeError, ValueError):
+        count = 20
+
+    turns = store.user_messages(conversation_id, limit=count)
+
+    if not turns:
+        return {"error": "no messages recorded for this conversation yet"}
+
+    return {"count": len(turns), "messages": turns}
+
+
+def build_actions(manager=None, store=None, runtime=True, conversation_id=None,
+                  chat_store=None):
     """Bind the ACTIONS table to live task machinery.
 
     The task tools need a store, so the process-wide runtime is created on
@@ -252,6 +298,11 @@ def build_actions(manager=None, store=None, runtime=True):
         "fetch_url": fetch_url,
         "pc_control": mac.pc_control,
         "describe_image": describe_image,
+        # The task store and the conversation database are different objects
+        # over the same file, so chat history gets whichever one can answer it.
+        "chat_history": lambda limit=None: chat_history(
+            chat_store or store, conversation_id, limit=limit
+        ),
     }
 
     if manager is not None and store is not None:

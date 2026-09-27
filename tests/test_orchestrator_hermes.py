@@ -382,7 +382,7 @@ class RefusesDelete:
         self.approved = approved
 
     def run(self, message, conversation=None, model=None, surface="cli",
-            approved_command=None):
+            approved_command=None, conversation_id=None):
         self.seen_approval = approved_command
         command = "rm -rf /tmp/sage-victim"
         yield {"type": "tool_pending", "name": "bash", "arguments": {}}
@@ -574,7 +574,7 @@ class TestFabricatedResultRetry:
             self.tasks = []
 
         def run(self, message, conversation=None, model=None, surface="cli",
-                approved_command=None):
+                approved_command=None, conversation_id=None):
             self.calls += 1
             self.tasks.append(message)
 
@@ -596,7 +596,7 @@ class TestFabricatedResultRetry:
             self.calls = 0
 
         def run(self, message, conversation=None, model=None, surface="cli",
-                approved_command=None):
+                approved_command=None, conversation_id=None):
             self.calls += 1
             yield {"type": "text", "delta": "Terminal opened (a new window)."}
 
@@ -620,7 +620,7 @@ class TestFabricatedResultRetry:
         assert job.status is JobStatus.COMPLETED
         assert job.result == "Terminal opened."
         # The retry has to name the gap, or it is just the same turn again.
-        assert "no tool was called" in handler.tasks[1]
+        assert "instead of doing it" in handler.tasks[1]
 
     def test_retry_is_bounded_at_one(self):
         handler = self.StubbornHandler()
@@ -628,7 +628,7 @@ class TestFabricatedResultRetry:
 
         assert handler.calls == 2
         assert job.status is JobStatus.FAILED
-        assert "no tool ran" in job.error
+        assert "no action taken" in job.error
 
     def test_a_tool_that_really_ran_is_never_retried(self):
         class HonestHandler:
@@ -636,7 +636,7 @@ class TestFabricatedResultRetry:
                 self.calls = 0
 
             def run(self, message, conversation=None, model=None, surface="cli",
-                    approved_command=None):
+                    approved_command=None, conversation_id=None):
                 self.calls += 1
                 yield {
                     "type": "tool", "name": "pc_control", "arguments": {},

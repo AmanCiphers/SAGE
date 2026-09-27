@@ -14,9 +14,13 @@ class Handler:
     turn.
     """
 
-    def __init__(self, llm=None, task_store=None, task_manager=None):
+    def __init__(self, llm=None, task_store=None, task_manager=None,
+                 chat_store=None):
         self.llm = llm or LLMClient()
         self.task_store = task_store
+        # Holds the message table. Falls back to the task store when the caller
+        # has only that.
+        self.chat_store = chat_store or task_store
         self.task_manager = task_manager
 
     def handle(self, message, conversation=None, model=None, surface="cli"):
@@ -31,11 +35,14 @@ class Handler:
         return content
 
     def run(self, message, conversation=None, model=None, surface="cli",
-            approved_command=None):
+            approved_command=None, conversation_id=None):
         """Yield tool-loop events for a request handled by SAGE itself."""
         actions = registry.build_actions(
-            manager=self.task_manager, store=self.task_store
-        ) if self.task_manager else registry.build_actions()
+            manager=self.task_manager, store=self.task_store,
+            conversation_id=conversation_id, chat_store=self.chat_store,
+        ) if self.task_manager else registry.build_actions(
+            conversation_id=conversation_id, chat_store=self.chat_store
+        )
 
         return run_tool_loop(
             self.llm,

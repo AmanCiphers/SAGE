@@ -78,6 +78,26 @@ TERSE_ACTION = re.compile(
     re.I,
 )
 
+# A reply that hands the work back to the user. Only a failure when no tool ran,
+# because quoting a command after a real result is legitimate; a model that ran
+# nothing and then said "you'll need to run this yourself" just refused.
+DEFERRED_TO_USER = re.compile(
+    r"(?:"
+    r"i\s*(?:do\s+not|don'?t)\s+have\s+access"
+    r"|i\s*(?:can\s*not|cannot|can'?t|am\s+unable|'m\s+unable)\s+"
+    r"(?:do|access|get|run|read|check|see|open|reach|find|look)"
+    r"|you(?:'ll|\s+will)\s+need\s+to\s+\w+"
+    r"|you\s+(?:can|should|will)\s+run\s+(?:this|that|the)"
+    r"|run\s+this\s+in\s+(?:your\s+)?terminal"
+    r"|\bdo\s+(?:this|that|it)\s+yourself\b"
+    r")",
+    re.I,
+)
+
+# Reasons that mean "the model described instead of doing". The orchestrator
+# retries once on these instead of failing the turn.
+RETRYABLE_PREFIX = "no action taken: "
+
 TERSE_CLAIM_MAX_CHARS = 120
 
 # Something that dates the action to the past, or hands it to someone else.
@@ -121,6 +141,21 @@ class Verifier:
         if PROVIDER_ERROR.search(result):
             return False, "output contains a provider error"
 
+        if tools_used is not None and not tools_used:
+            # Ahead of the plain refusal check, and ahead of the guidance
+            # exemption below: "I can't read that for you, you should run cat"
+            # is a refusal wearing advice as a disguise, and guidance words must
+            # not launder it. Running nothing and declining is retryable,
+            # because the model may simply not have tried.
+            if DEFERRED_TO_USER.search(text):
+                return False, (
+                    f"{RETRYABLE_PREFIX}hands the work back to the user "
+                    "without calling a tool"
+                )
+
+            if REFUSAL.match(text):
+                return False, f"{RETRYABLE_PREFIX}refused without calling a tool"
+
         if len(text) <= REFUSAL_ONLY_MAX_CHARS and REFUSAL.match(text):
             return False, "result is a refusal, not an answer"
 
@@ -138,7 +173,10 @@ class Verifier:
                 )
 
             if claimed:
-                return False, f"claims '{claimed.group(0).strip()}' but no tool ran to do it"
+                return False, (
+                    f"{RETRYABLE_PREFIX}claims '{claimed.group(0).strip()}' "
+                    "but no tool ran to do it"
+                )
 
         return True, "ok"
 

@@ -15,7 +15,7 @@ class StubHandler:
         self.replayed = []
 
     def run(self, message, conversation=None, model=None, surface="cli",
-            approved_command=None):
+            approved_command=None, conversation_id=None):
         self.replayed.append(approved_command)
 
         if approved_command is None:
