@@ -1,3 +1,4 @@
+import re
 from enum import Enum
 
 
@@ -21,23 +22,24 @@ class Job:
         self.type = job_type
         self.status = JobStatus.CREATED
         self.model = None
-        self.complexity = None
         self.analysis = None
         self.result = None
         self.error = None
-        
-    
-    def set_type_from_analysis(self):
-        action = self.analysis.action.lower()
+        self.routing_reason = None
 
-        if "code" in action or "create" in action or "build" in action:
-            self.type = JobType.CODE
+    def set_type_from_capability(self):
+        """Derive the job type from what SAGE can actually do for it.
 
-        elif "browser" in action or "search" in action:
+        This replaces keyword matching on the analyzer's free-text action, which
+        produced a label nothing read.
+        """
+        message = f"{self.request} {self.analysis.action if self.analysis else ''}".lower()
+
+        if re.search(r"\b(?:https?://|www\.)\S+|\b[a-z0-9-]+\.(?:com|net|org|io|dev|app|co)\b", message):
             self.type = JobType.BROWSER
-
-        elif "terminal" in action or "command" in action or "run" in action:
+        elif re.search(r"\b(?:code|repo|script|test|build|compile|refactor|function|bug)\w*\b", message):
+            self.type = JobType.CODE
+        elif re.search(r"\b(?:run|install|command|shell|terminal|git|npm|pip)\b", message):
             self.type = JobType.TERMINAL
-
         else:
             self.type = JobType.GENERAL

@@ -1,20 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import Panel from "./panel";
 import {
-  ENDPOINT,
-  MODEL,
-  MODEL_SHORT,
+  FALLBACK_INFO,
   PROMPTS,
-  RUNTIME,
-  STORE,
-  TRANSPORT,
   fmtChars,
   fmtClock,
   fmtElapsed,
   fmtMs,
   fmtStamp,
+  shortModel,
 } from "@/lib/format";
 
 const TONE = {
@@ -25,6 +23,56 @@ const TONE = {
 };
 
 const TAG = { in: ">", sage: "sage", tool: "log", sys: "::" };
+
+// SAGE answers in markdown, so the tape has to render it rather than show the
+// raw "#" and "**". Only applied to sealed lines: re-parsing on every stream
+// delta would be wasted work and makes the text jump while it types.
+const MD = {
+  h1: ({ children }) => <h1 className="mt-3 mb-1 text-[15px] font-semibold text-zinc-100">{children}</h1>,
+  h2: ({ children }) => <h2 className="mt-3 mb-1 text-[14px] font-semibold text-zinc-100">{children}</h2>,
+  h3: ({ children }) => <h3 className="mt-2 mb-1 text-[13px] font-semibold text-zinc-200">{children}</h3>,
+  h4: ({ children }) => <h4 className="mt-2 mb-1 text-[13px] font-medium text-zinc-300">{children}</h4>,
+  p: ({ children }) => <p className="my-1 leading-relaxed">{children}</p>,
+  strong: ({ children }) => <strong className="font-semibold text-zinc-200">{children}</strong>,
+  em: ({ children }) => <em className="italic text-zinc-300">{children}</em>,
+  del: ({ children }) => <del className="text-zinc-600">{children}</del>,
+  ul: ({ children }) => <ul className="my-1 list-disc pl-5 space-y-0.5 marker:text-zinc-600">{children}</ul>,
+  ol: ({ children }) => <ol className="my-1 list-decimal pl-5 space-y-0.5 marker:text-zinc-600">{children}</ol>,
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  hr: () => <hr className="my-2 border-zinc-800" />,
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="text-zinc-300 underline underline-offset-2 hover:text-zinc-100"
+    >
+      {children}
+    </a>
+  ),
+  code: ({ children, className }) =>
+    className ? (
+      <code className="rounded bg-zinc-900 px-1 py-0.5 text-[12px] text-zinc-300">{children}</code>
+    ) : (
+      <code className="rounded bg-zinc-900 px-1 py-0.5 text-[12px] text-zinc-300">{children}</code>
+    ),
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[12px] leading-relaxed text-zinc-300">
+      {children}
+    </pre>
+  ),
+  table: ({ children }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="w-full border-collapse text-[12px]">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="border-b border-zinc-700">{children}</thead>,
+  th: ({ children }) => <th className="px-2 py-1 text-left font-semibold text-zinc-300">{children}</th>,
+  td: ({ children }) => <td className="border-t border-zinc-800 px-2 py-1 align-top text-zinc-400">{children}</td>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-1 border-l-2 border-zinc-700 pl-3 text-zinc-500">{children}</blockquote>
+  ),
+};
 
 const bootLines = () => [
   { id: 0, kind: "sys", text: "sage online. personal intelligence core loaded.", at: Date.now() },
@@ -68,6 +116,7 @@ function Row({ label, value, tone = "text-zinc-300" }) {
 
 export default function Console() {
   const [lines, setLines] = useState(bootLines);
+  const [info, setInfo] = useState(FALLBACK_INFO);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [apiUp, setApiUp] = useState(true);
@@ -83,7 +132,32 @@ export default function Console() {
   const inputRef = useRef(null);
 
   const push = useCallback((kind, text) => {
-    setLines((cur) => [...cur, { id: ++seq.current, kind, text, at: Date.now() }]);
+    setLines((cur) => [
+      ...cur,
+      { id: ++seq.current, kind, text, at: Date.now(), sealed: false },
+    ]);
+  }, []);
+
+  const append = useCallback((kind, text) => {
+    setLines((cur) => {
+      const last = cur[cur.length - 1];
+
+      if (!last || last.kind !== kind || last.sealed) {
+        return [...cur, { id: ++seq.current, kind, text, at: Date.now(), sealed: false }];
+      }
+
+      return [...cur.slice(0, -1), { ...last, text: last.text + text }];
+    });
+  }, []);
+
+  const seal = useCallback((kind) => {
+    setLines((cur) => {
+      const last = cur[cur.length - 1];
+
+      if (!last || last.kind !== kind) return cur;
+
+      return [...cur.slice(0, -1), { ...last, sealed: true }];
+    });
   }, []);
 
   const focusComposer = useCallback(() => inputRef.current?.focus(), []);
@@ -112,6 +186,21 @@ export default function Console() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+
+    fetch("/info", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (alive && data) setInfo((cur) => ({ ...cur, ...data }));
+      })
+      .catch(() => {});
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!autoScroll) return;
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -128,28 +217,102 @@ export default function Console() {
     const started = performance.now();
     let outChars = 0;
     let status = "ERR";
+    let sawText = false;
+    let sawError = false;
+    let sawDone = false;
+    let sawNotice = false;
+
+    const onFrame = (payload) => {
+      if (payload.stage) {
+        if (payload.stage === "tool" && payload.name) {
+          push("tool", `[call] ${payload.name}(${payload.arguments || ""})`);
+          return;
+        }
+
+        const detail = payload.handler ? ` · ${payload.handler}/${payload.type}` : "";
+        const why = payload.reason ? ` · ${payload.reason}` : "";
+        push("sys", `:: ${payload.stage}${detail}${why}`);
+        return;
+      }
+
+      if (payload.tool) {
+        const mark = payload.ok === false ? "fail" : "ok";
+        push("tool", `[${mark}] ${payload.tool} · ${payload.summary || ""}`);
+        return;
+      }
+
+      if (payload.notice) {
+        sawNotice = true;
+        push("sys", `:: ${payload.notice}`);
+        return;
+      }
+
+      if (payload.error) {
+        sawError = true;
+        push("tool", `[err] ${payload.error}`);
+        seal("sage");
+        return;
+      }
+
+      if (typeof payload.delta === "string" && payload.delta) {
+        append("sage", payload.delta);
+        outChars += payload.delta.length;
+        sawText = true;
+      }
+
+      if (payload.done) {
+        sawDone = true;
+        seal("sage");
+      }
+    };
 
     try {
-      const res = await fetch("/chat", {
+      const res = await fetch("/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg }),
       });
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.body) throw new Error("streaming unsupported by this browser");
 
-      const data = await res.json();
-      const chunks = Array.isArray(data.events) ? [...data.events] : [];
-      if (data.response && chunks[chunks.length - 1] !== data.response) {
-        chunks.push(data.response);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+
+        for (const frame of frames) {
+          const line = frame.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+
+          try {
+            onFrame(JSON.parse(line.slice(6)));
+          } catch {
+            /* ignore malformed frame */
+          }
+        }
       }
-      if (!chunks.length) throw new Error("empty response");
 
-      chunks.forEach((text) => push("sage", text));
-      outChars = chunks.join("").length;
-      status = "OK";
+      if (!sawText && !sawError) throw new Error("empty response");
+      if (!sawDone) {
+        sawError = true;
+        push("tool", "[err] stream ended early — reply may be incomplete");
+        seal("sage");
+      }
+
+      status = sawText && sawDone && !sawError ? (sawNotice ? "PARTIAL" : "OK") : "ERR";
       setApiUp(true);
     } catch (e) {
       push("tool", `[err] ${e instanceof Error ? e.message : String(e)}`);
+      seal("sage");
       setApiUp(false);
     } finally {
       const ms = performance.now() - started;
@@ -163,7 +326,7 @@ export default function Console() {
       setBusy(false);
       focusComposer();
     }
-  }, [input, busy, push, focusComposer]);
+  }, [input, busy, push, append, seal, focusComposer]);
 
   const clear = useCallback(() => {
     setLines(bootLines());
@@ -191,7 +354,7 @@ export default function Console() {
           <span className="hidden text-xs text-zinc-600 sm:inline">:: PERSONAL INTELLIGENCE</span>
         </div>
         <div className="flex items-center gap-4 text-[11px] text-zinc-500">
-          <span className="hidden md:inline">{MODEL_SHORT}</span>
+          <span className="hidden md:inline">{shortModel(info.model)}</span>
           <span className="hidden md:inline">up {fmtElapsed(now - startedAt.current)}</span>
           <span>{fmtClock(now)}</span>
           <span className={apiUp ? "text-emerald-500/70" : "text-rose-500/80"}>
@@ -246,12 +409,20 @@ export default function Console() {
                   >
                     {TAG[line.kind]}
                   </span>
-                  <span
-                    className={`min-w-0 flex-1 ${TONE[line.kind].text} ${
-                      wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
-                    }`}
-                  >
-                    {line.kind === "in" ? line.text.replace(/^>\s*/, "") : line.text}
+                  <span className={`min-w-0 flex-1 ${TONE[line.kind].text}`}>
+                    {line.kind === "sage" && line.sealed ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+                        {line.text}
+                      </ReactMarkdown>
+                    ) : (
+                      <span
+                        className={
+                          wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+                        }
+                      >
+                        {line.kind === "in" ? line.text.replace(/^>\s*/, "") : line.text}
+                      </span>
+                    )}
                   </span>
                 </div>
               ))}
@@ -306,11 +477,11 @@ export default function Console() {
 
           <Panel title="telemetry">
             <div className="space-y-2 px-3 py-3">
-              <Row label="model" value={MODEL} tone="text-zinc-400" />
-              <Row label="transport" value={TRANSPORT} />
-              <Row label="runtime" value={RUNTIME} />
-              <Row label="store" value={STORE} />
-              <Row label="endpoint" value={ENDPOINT} />
+              <Row label="model" value={info.model} tone="text-zinc-400" />
+              <Row label="transport" value={info.transport} />
+              <Row label="runtime" value={info.runtime} />
+              <Row label="store" value={info.store} />
+              <Row label="endpoint" value={info.endpoint} />
               <Row
                 label="last call"
                 value={`${stats.lastStatus} · ${fmtMs(stats.lastMs)}`}
@@ -357,7 +528,7 @@ export default function Console() {
 
       <footer className="flex items-center justify-between border border-zinc-800 bg-zinc-950 px-4 py-2 text-[10px] text-zinc-700">
         <span>
-          {MODEL_SHORT} · {TRANSPORT} · {STORE}
+          {shortModel(info.model)} · {info.transport} · {info.store}
         </span>
         <span>1 channel · {apiUp ? "linked" : "unlinked"}</span>
       </footer>

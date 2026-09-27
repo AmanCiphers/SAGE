@@ -1,17 +1,22 @@
 from sage.core.decision import Decision
+from sage.core.llm import DEFAULT_MODEL
 
 
 class DecisionMaker:
-    def decide(self, analysis, original_message):
-        if analysis.delegate:
-            return Decision(
-                handler="hermes",
-                model="nvidia/nemotron-3-ultra-550b-a55b",
-                task=original_message
-            )
+    """Route an analyzed request to either SAGE itself or the Hermes agent."""
+
+    def decide(self, analysis, original_message, delegate=None):
+        """Pick a handler.
+
+        ``delegate`` is the capability check's verdict. It is honoured when
+        given, so the deterministic check can override the analyzer's guess;
+        when omitted, the analyzer's own ``delegate`` flag decides.
+        """
+        if delegate is None:
+            delegate = analysis.delegate
 
         return Decision(
-            handler="sage",
-            model="nvidia/nemotron-3-ultra-550b-a55b",
-            task=original_message
+            handler="hermes" if delegate else "sage",
+            model=DEFAULT_MODEL,
+            task=original_message,
         )

@@ -1,15 +1,21 @@
-export const MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
-export const MODEL_SHORT = "nemotron-3-ultra";
-export const RUNTIME = "fastapi · uvicorn";
-export const STORE = "sqlite";
-export const ENDPOINT = "POST /chat";
-export const TRANSPORT = "nim · https";
+export const FALLBACK_INFO = {
+  model: "unknown",
+  transport: "nim · https",
+  runtime: "fastapi · uvicorn",
+  store: "sqlite",
+  endpoint: "POST /chat/stream",
+};
 
 export const PROMPTS = [
   "Who are you and what can you do?",
   "Break down a goal I am working towards",
   "Summarise what you remember about me",
 ];
+
+export const shortModel = (model) => {
+  const name = (model || "").split("/").pop();
+  return name ? name.split("-").slice(0, 3).join("-") : "unknown";
+};
 
 const pad = (n, w = 2) => String(n).padStart(w, "0");
 
