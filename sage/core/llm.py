@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from sage.core.personality import SYSTEM_PROMPT
+from sage.tools.llm_helpers import assemble_tool_calls
 
 load_dotenv()
 
@@ -84,8 +85,7 @@ class LLMClient:
         )
 
         content = []
-        calls = {}
-        order = []
+        deltas = []
 
         for chunk in response:
             if not chunk.choices:
@@ -97,33 +97,9 @@ class LLMClient:
                 content.append(delta.content)
                 yield {"type": "text", "delta": delta.content}
 
-            for call in delta.tool_calls or []:
-                index = call.index if call.index is not None else 0
+            deltas.append(delta)
 
-                if index not in calls:
-                    calls[index] = {"id": "", "name": "", "arguments": ""}
-                    order.append(index)
-
-                if call.id:
-                    calls[index]["id"] = call.id
-
-                if call.function:
-                    if call.function.name:
-                        calls[index]["name"] += call.function.name
-                    if call.function.arguments:
-                        calls[index]["arguments"] += call.function.arguments
-
-        tool_calls = [
-            {
-                "id": calls[index]["id"],
-                "type": "function",
-                "function": {
-                    "name": calls[index]["name"],
-                    "arguments": calls[index]["arguments"],
-                },
-            }
-            for index in order
-        ]
+        tool_calls = assemble_tool_calls(deltas)
 
         message = {"role": "assistant", "content": "".join(content) or None}
 

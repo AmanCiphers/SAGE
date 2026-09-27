@@ -14,6 +14,8 @@ class JobStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    # HERMES refused a dangerous action and is waiting on a human yes/no.
+    NEEDS_APPROVAL = "needs_approval"
 
 
 class Job:
@@ -26,6 +28,7 @@ class Job:
         self.result = None
         self.error = None
         self.routing_reason = None
+        self.approval = None
 
     def set_type_from_capability(self):
         """Derive the job type from what SAGE can actually do for it.

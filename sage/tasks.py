@@ -15,6 +15,18 @@ from pathlib import Path
 DEFAULT_POLL_SECONDS = 5
 
 
+# A task's runner is a full Orchestrator, whose model can call create_task
+# again. That is unbounded thread growth driven by the model, so a worker
+# refuses to spawn more workers. Thread-local, because each task runs on its
+# own thread and a sibling task must not inherit the restriction.
+_worker = threading.local()
+
+
+def in_task_worker():
+    """True when the current thread is running a spawned task's goal."""
+    return getattr(_worker, "depth", 0) > 0
+
+
 class TaskStore:
     def __init__(self, path="sage.db"):
         self.path = str(path)
@@ -92,8 +104,10 @@ class TaskStore:
         return dict(row) if row else None
 
     def list_tasks(self, limit=25):
+        # created_at has one-second resolution, so tasks created in the same
+        # second tie. rowid breaks the tie in insertion order.
         rows = self._exec(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)
         ).fetchall()
 
         return [dict(row) for row in rows]
@@ -147,11 +161,14 @@ class TaskStore:
 class Scheduler(threading.Thread):
     """Polls for due reminders and fires them through a dispatch callback."""
 
-    def __init__(self, store, dispatch=None, poll_seconds=DEFAULT_POLL_SECONDS):
+    def __init__(self, store, dispatch=None, poll_seconds=DEFAULT_POLL_SECONDS,
+                 notify=None):
         super().__init__(daemon=True, name="sage-scheduler")
         self.store = store
         self.poll_seconds = poll_seconds
         self.dispatch = dispatch or (lambda reminder: print(f"[reminder] {reminder['title']}"))
+        # A fired reminder has to reach the user, not just the server log.
+        self.notify = notify
         self._stop = threading.Event()
 
     def run(self):
@@ -167,6 +184,12 @@ class Scheduler(threading.Thread):
                 self.dispatch(reminder)
             except Exception as error:
                 print(f"[SCHEDULER] dispatch failed for {reminder['id']}: {error}")
+
+            if self.notify is not None and not (reminder.get("context") or "").startswith("LOOP:"):
+                try:
+                    self.notify(reminder)
+                except Exception as error:
+                    print(f"[SCHEDULER] notify failed for {reminder['id']}: {error}")
 
             interval = reminder.get("repeat_interval") or 0
 
@@ -197,6 +220,7 @@ class TaskManager:
 
         def work():
             self.store.update_task(task_id, status="running", progress="worker started")
+            _worker.depth = getattr(_worker, "depth", 0) + 1
 
             try:
                 result = runner(goal, lambda text: self.store.update_task(task_id, progress=text))
@@ -208,6 +232,7 @@ class TaskManager:
                 self.store.update_task(task_id, status="failed", result=str(error)[:2000])
                 status = "failed"
             finally:
+                _worker.depth -= 1
                 with self._lock:
                     self.threads.pop(task_id, None)
 
@@ -256,7 +281,7 @@ _runtime = None
 _runtime_lock = threading.Lock()
 
 
-def get_runtime(db_path="sage.db", start_scheduler=True):
+def get_runtime(db_path="sage.db", start_scheduler=True, notify=None):
     """Return the process-wide task store, manager, and scheduler.
 
     Built once on first use. Without this the task tools were advertised to the
@@ -281,7 +306,7 @@ def get_runtime(db_path="sage.db", start_scheduler=True):
             else:
                 print(f"[REMINDER] {reminder['title']}")
 
-        scheduler = Scheduler(store, dispatch=dispatch)
+        scheduler = Scheduler(store, dispatch=dispatch, notify=notify)
 
         if start_scheduler:
             scheduler.start()

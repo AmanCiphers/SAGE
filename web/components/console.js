@@ -124,6 +124,7 @@ export default function Console() {
   const [wrap, setWrap] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const [stats, setStats] = useState(emptyStats);
+  const [approval, setApproval] = useState(null);
   const [now, setNow] = useState(() => Date.now());
 
   const seq = useRef(0);
@@ -200,6 +201,39 @@ export default function Console() {
     };
   }, []);
 
+  // A reminder that fires while the request stream is closed has no other way
+  // to reach the user, so poll for the ones the server recorded.
+  useEffect(() => {
+    let alive = true;
+
+    const poll = async () => {
+      try {
+        const res = await fetch("/notifications", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (!alive || !data.notifications?.length) return;
+
+        for (const note of data.notifications) {
+          // "sys" is a real line kind; TONE/TAG have no "notice" entry and an
+          // unknown kind would throw during render. Markdown is only rendered
+          // on sealed sage lines, so this stays plain text.
+          push("sys", `${note.kind}: ${note.body}`);
+        }
+      } catch {
+        /* the console stays usable when the server is restarting */
+      }
+    };
+
+    const id = setInterval(poll, 5000);
+    poll();
+
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [push]);
+
   useEffect(() => {
     if (!autoScroll) return;
     const el = logRef.current;
@@ -221,8 +255,20 @@ export default function Console() {
     let sawError = false;
     let sawDone = false;
     let sawNotice = false;
+    let sawApproval = false;
 
     const onFrame = (payload) => {
+      // A parked destructive action: nothing has run yet, and the user has to
+      // answer before anything does. Handled before the generic branches so it
+      // cannot be mistaken for an error.
+      if (payload.approval) {
+        sawApproval = true;
+        seal("sage");
+        setApproval(payload.approval);
+        push("sys", `:: approval required · ${payload.approval.description || payload.approval.target || ""}`);
+        return;
+      }
+
       if (payload.stage) {
         if (payload.stage === "tool" && payload.name) {
           push("tool", `[call] ${payload.name}(${payload.arguments || ""})`);
@@ -301,14 +347,20 @@ export default function Console() {
         }
       }
 
-      if (!sawText && !sawError) throw new Error("empty response");
-      if (!sawDone) {
+      if (sawApproval) {
+        // The turn stopped on a question, not on a broken stream.
+        status = "OK";
+      } else if (!sawText && !sawError) {
+        throw new Error("empty response");
+      } else if (!sawDone) {
         sawError = true;
         push("tool", "[err] stream ended early — reply may be incomplete");
         seal("sage");
+        status = "ERR";
+      } else {
+        status = sawNotice ? "PARTIAL" : "OK";
       }
 
-      status = sawText && sawDone && !sawError ? (sawNotice ? "PARTIAL" : "OK") : "ERR";
       setApiUp(true);
     } catch (e) {
       push("tool", `[err] ${e instanceof Error ? e.message : String(e)}`);
@@ -327,6 +379,43 @@ export default function Console() {
       focusComposer();
     }
   }, [input, busy, push, append, seal, focusComposer]);
+
+  const answerApproval = useCallback(
+    async (approved) => {
+      if (!approval) return;
+
+      const pending = approval;
+      setApproval(null);
+      setBusy(true);
+      push("in", `> ${approved ? "yes" : "no"}`);
+
+      try {
+        const res = await fetch("/chat/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: pending.id, approved }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || data.status === "failed") {
+          push("tool", `[err] ${data.error || `HTTP ${res.status}`}`);
+          return;
+        }
+
+        push("sage", data.response || (approved ? "Approved." : "Declined."));
+        setStats((cur) => ({ ...cur, turns: cur.turns + 1, lastStatus: "OK" }));
+        setApiUp(true);
+      } catch (e) {
+        push("tool", `[err] ${e instanceof Error ? e.message : String(e)}`);
+        setApiUp(false);
+      } finally {
+        setBusy(false);
+        focusComposer();
+      }
+    },
+    [approval, push, focusComposer],
+  );
 
   const clear = useCallback(() => {
     setLines(bootLines());
@@ -435,6 +524,40 @@ export default function Console() {
               </div>
             )}
           </div>
+
+          {approval && (
+            <div className="border-t border-amber-500/40 bg-amber-500/5 px-4 py-3">
+              <div className="text-[11px] tracking-[0.2em] text-amber-400/80">
+                APPROVAL REQUIRED
+              </div>
+              <div className="mt-1 text-[13px] leading-relaxed text-zinc-200">
+                {approval.description || approval.target}
+              </div>
+              {approval.target && approval.target !== approval.description && (
+                <pre className="mt-2 overflow-x-auto border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-[12px] text-zinc-300">
+                  {approval.target}
+                </pre>
+              )}
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => answerApproval(true)}
+                  className="border border-amber-400/60 px-3 py-1 text-[12px] text-amber-200 hover:bg-amber-400/10 disabled:opacity-50"
+                >
+                  allow once
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => answerApproval(false)}
+                  className="border border-zinc-700 px-3 py-1 text-[12px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  decline
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="composer flex items-start gap-2 border-t border-zinc-800 px-4 py-3">
             <span className="pt-1.5 text-zinc-500">&gt;</span>

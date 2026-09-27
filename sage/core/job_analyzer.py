@@ -39,14 +39,55 @@ ATTEMPTS = 2
 
 
 class Analyzer:
-    def __init__(self, llm=None, surface="cli", local_tools=True):
+    def __init__(self, llm=None, surface="cli", local_tools=True, store=None,
+                 conversation_id=None):
         self.llm = llm or LLMClient()
         self.surface = surface
         self.local_tools = local_tools
+        self.store = store
+        self.conversation_id = conversation_id
+
+    def _history_note(self):
+        """Summarise how recent routes turned out, so the model can learn.
+
+        A verifier that only checks for a non-empty string called almost every
+        run a success, which made the recorded outcomes worthless as feedback.
+        They now reflect refused, errored, and empty answers too, so a handler
+        that keeps failing here is visible to the model on the next turn.
+        """
+        if not self.store or not self.conversation_id:
+            return ""
+
+        try:
+            outcomes = self.store.recent_route_outcomes(self.conversation_id, limit=10)
+        except Exception as error:
+            print(f"[ANALYZER] could not read route history: {error}")
+            return ""
+
+        if not outcomes:
+            return ""
+
+        tally = {}
+
+        for row in outcomes:
+            key = f"{row['handler']}/{row['action'] or 'unknown'}"
+            passed, total = tally.get(key, (0, 0))
+            tally[key] = (passed + bool(row["success"]), total + 1)
+
+        lines = [
+            f"  {key}: {passed}/{total} answered"
+            for key, (passed, total) in sorted(tally.items())
+        ]
+
+        return (
+            "How recent requests in this conversation turned out "
+            "(prefer a handler that has been answering):\n" + "\n".join(lines) + "\n"
+        )
 
     def analyze(self, message):
         prompt = (
             f"{_brief(self.surface, self.local_tools)}\n"
+            f"{self._history_note()}"
             "Classify the request below.\n\n"
             f"Expected JSON shape:\n{json.dumps(_schema(self.surface, self.local_tools), indent=2)}\n\n"
             f"Request:\n{message}\n"
@@ -95,7 +136,16 @@ class Analyzer:
         if start == -1 or end <= start:
             raise ValueError("no JSON object found in response")
 
-        data = json.loads(text[start : end + 1])
+        snippet = text[start : end + 1]
+
+        try:
+            data = json.loads(snippet)
+        except json.JSONDecodeError as exc:
+            # The model often brackets valid JSON with prose, which lands here.
+            # Report where it broke instead of leaking a bare decoder message.
+            raise ValueError(
+                f"response looked like JSON but did not parse at column {exc.colno}: {exc.msg}"
+            ) from None
 
         if not isinstance(data, dict):
             raise ValueError("JSON payload is not an object")

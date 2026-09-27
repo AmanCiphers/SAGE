@@ -13,6 +13,7 @@ from sage.core.database import Database
 from sage.core.job import JobStatus
 from sage.core.llm import DEFAULT_MODEL
 from sage.core.orchestrator import Orchestrator
+from sage.tasks import get_runtime
 from sage.tools import registry
 
 # The pipeline reports progress with print(). Without this, stdout is block
@@ -39,17 +40,34 @@ db.initialize()
 
 conversation_id = db.get_or_create_primary_conversation()
 
-# bash and pc_control are arbitrary execution and full desktop control. They
-# stay off on the web surface unless explicitly enabled, so an exposed port is
-# not an unauthenticated remote shell.
-LOCAL_TOOLS = os.environ.get("SAGE_ALLOW_LOCAL_TOOLS", "").lower() in ("1", "true", "yes")
+# bash and pc_control are arbitrary execution and full desktop control. They are
+# on by default so a request like "open Terminal" can be carried out instead of
+# being declined; set SAGE_ALLOW_LOCAL_TOOLS=0 to lock them down. Destructive
+# commands still require approval either way.
+LOCAL_TOOLS = os.environ.get("SAGE_ALLOW_LOCAL_TOOLS", "1").lower() not in ("0", "false", "no", "")
 registry.set_local_tools_allowed(LOCAL_TOOLS)
 
-orchestrator = Orchestrator(surface="web", local_tools=LOCAL_TOOLS)
+def _notify(reminder):
+    """Surface a fired reminder to the web client, which polls for these."""
+    db.add_notification("reminder", reminder["title"])
+
+
+# Built early so the scheduler can deliver reminders fired later, and so the
+# tool table the handler builds is the same runtime the API reports on.
+get_runtime(notify=_notify)
+
+orchestrator = Orchestrator(
+    surface="web", local_tools=LOCAL_TOOLS, store=db, conversation_id=conversation_id
+)
 
 
 class ChatRequest(BaseModel):
     message: str
+
+
+class ApprovalRequest(BaseModel):
+    id: str
+    approved: bool
 
 
 def _sse(payload):
@@ -102,8 +120,15 @@ def chat(request: ChatRequest):
 
     payload = {"response": job.result or "", "status": job.status.value}
 
-    if job.status is not JobStatus.COMPLETED:
+    if job.status is JobStatus.COMPLETED:
+        return payload
+
+    if job.status is JobStatus.NEEDS_APPROVAL:
         payload["error"] = job.error
+        payload["approval"] = job.approval.as_payload()
+        return payload
+
+    payload["error"] = job.error
 
     return payload
 
@@ -179,6 +204,11 @@ def chat_stream(request: ChatRequest):
             "status": (final or {}).get("status") or JobStatus.FAILED.value,
         }
 
+        approval = (final or {}).get("approval")
+
+        if approval:
+            done["approval"] = approval
+
         if failure:
             done["error"] = failure
 
@@ -193,3 +223,58 @@ def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/chat/approve")
+def chat_approve(request: ApprovalRequest):
+    """Answer a parked approval and replay the turn.
+
+    A refusal ends it: the parked turn is dropped and nothing is executed. A yes
+    replays the same task with process-scoped ``--yolo``, which still cannot
+    override HERMES hard-deny rules. When the refusal came from SAGE's own bash
+    tool, only the command the user actually saw is allowed through.
+    """
+    from sage.core.approvals import registry as approvals
+
+    pending = approvals.resolve(request.id)
+
+    if pending is None:
+        return {
+            "status": "failed",
+            "error": "no pending approval with that id (it may have expired)",
+        }
+
+    if not request.approved:
+        return {
+            "status": "declined",
+            "response": (
+                "Declined. Nothing was run."
+                if pending.approved_command
+                else "Declined. HERMES was not allowed to run that action."
+            ),
+        }
+
+    job = orchestrator.run(
+        pending.task,
+        conversation=db.get_messages(pending.conversation_id or conversation_id),
+        surface="web",
+        yolo=True,
+        approved_command=pending.approved_command,
+    )
+
+    _save_assistant(job.result)
+
+    return {
+        "status": job.status.value,
+        "response": job.result or "",
+        "error": job.error,
+    }
+
+
+@app.get("/notifications")
+def notifications():
+    """Unread notifications, then marked read. Polled by the console."""
+    pending = db.unread_notifications()
+    db.mark_notifications_read()
+
+    return {"notifications": pending}

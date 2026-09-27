@@ -197,11 +197,12 @@ _specs = [BASH_SPEC, SEARCH_SPEC, FETCH_SPEC, PC_SPEC, VISION_SPEC, *TASK_SPECS,
 SPECS = [spec for spec in _specs if spec["function"]["name"] not in LOCAL_TOOLS]
 ALL_SPECS = list(_specs)
 
-# Default OFF. The CLI opts in at startup; the web surface stays off unless
-# SAGE_ALLOW_LOCAL_TOOLS is set. Defaulting to on would hand local tools to
-# any embedding that never wired the gate up, which is the failure this gate
-# exists to prevent.
-_allowed = os.environ.get("SAGE_ALLOW_LOCAL_TOOLS", "").lower() in ("1", "true", "yes")
+# Default ON, so every surface (CLI, web, anything embedding SAGE) can actually
+# act on a request. Set SAGE_ALLOW_LOCAL_TOOLS=0 to lock the shell and desktop
+# control down. Note what the default now implies: a web surface started without
+# this set is remote code execution, so bind it to loopback or put auth in front
+# of it. The destructive-command gate is unaffected and still applies.
+_allowed = os.environ.get("SAGE_ALLOW_LOCAL_TOOLS", "1").lower() not in ("0", "false", "no", "")
 
 
 def set_local_tools_allowed(allowed):
@@ -233,7 +234,7 @@ def _web_search(query, num_results=5):
     return {"query": query, "provider": found.get("provider"), "results": found["results"]}
 
 
-def build_actions(manager=None, store=None, scheduler_dispatch=None, runtime=True):
+def build_actions(manager=None, store=None, runtime=True):
     """Bind the ACTIONS table to live task machinery.
 
     The task tools need a store, so the process-wide runtime is created on
@@ -261,12 +262,24 @@ def build_actions(manager=None, store=None, scheduler_dispatch=None, runtime=Tru
                 "note": "loop or reminder cancelled" if cancelled else "no such loop or reminder",
             }
 
+        def _create_task(title):
+            from sage.tasks import in_task_worker
+
+            if in_task_worker():
+                # Otherwise a task whose model calls create_task again grows
+                # worker threads without bound.
+                return {
+                    "error": "already running inside a task; a task cannot start another",
+                }
+
+            return {
+                "task_id": manager.start(title),
+                "note": "worker spawned in the background",
+            }
+
         actions.update(
             {
-                "create_task": lambda title: {
-                    "task_id": manager.start(title),
-                    "note": "worker spawned in the background",
-                },
+                "create_task": _create_task,
                 "task_status": lambda task_id=None: {
                     "tasks": [store.get_task(task_id)]
                     if task_id
@@ -288,15 +301,19 @@ def build_actions(manager=None, store=None, scheduler_dispatch=None, runtime=Tru
     return actions
 
 
-def call(name, arguments, actions):
+def call(name, arguments, actions, approved_command=None):
     """Run one tool, enforcing the local-tools gate.
+
+    ``approved_command`` is the destructive command the user explicitly
+    confirmed; it is forwarded to ``bash`` only, so the approval covers that one
+    command instead of every call in the turn.
 
     Never raises: a failing tool must come back to the model as an error it can
     reason about, not as an exception that kills the turn.
     """
     if name in LOCAL_TOOLS and not _allowed:
         mac.audit(f"{name} BLOCKED local tools disabled")
-        return {"error": f"{name} is disabled on this surface. Set SAGE_ALLOW_LOCAL_TOOLS=1 to enable."}
+        return {"error": f"{name} is disabled on this surface. Unset SAGE_ALLOW_LOCAL_TOOLS, or set it to 1, to enable."}
 
     if name not in actions:
         return {"error": f"unknown tool '{name}'; available: {', '.join(sorted(actions))}"}
@@ -308,6 +325,9 @@ def call(name, arguments, actions):
 
     if not isinstance(parsed, dict):
         return {"error": f"arguments for {name} must be a JSON object"}
+
+    if name == "bash" and approved_command:
+        parsed["approved_command"] = approved_command
 
     try:
         return actions[name](**parsed)

@@ -89,8 +89,18 @@ def _command_for(action, target, browser):
         return ["open", url]
 
     if action == "volume":
+        # Reject bools (True is an int) and fractions, so a model sending
+        # volume=true or 3.7 gets told rather than silently rounded.
+        if isinstance(target, bool):
+            raise ValueError("volume must be an integer 0-100")
+
+        if isinstance(target, float):
+            if not target.is_integer():
+                raise ValueError("volume must be a whole number 0-100")
+            target = int(target)
+
         try:
-            level = int(target)
+            level = int(str(target).strip())
         except (TypeError, ValueError):
             raise ValueError("volume must be an integer 0-100")
 

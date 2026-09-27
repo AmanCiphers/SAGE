@@ -33,6 +33,12 @@ ESCALATE = re.compile(
 # An explicit request to use the other agent.
 EXPLICIT_HERMES = re.compile(r"\b(?:use|ask|delegate\s+to|hand\s+(?:this\s+)?(?:off|it)\s+to)\s+hermes\b", re.I)
 
+# Tools a single call fully satisfies. Asking for one of these and nothing else
+# is the analyzer's own statement that the job is one step.
+SINGLE_SHOT_TOOLS = frozenset(
+    {"bash", "pc_control", "web_search", "fetch_url", "describe_image"}
+)
+
 
 def needs_hermes(message):
     """True when the request shows signs of needing planning or autonomy."""
@@ -44,13 +50,49 @@ def needs_hermes(message):
     return bool(ESCALATE.search(text))
 
 
+def can_demote(analysis, message):
+    """True when an escalated request is really a single tool call.
+
+    The analyzer is lenient in both directions, and because a false positive
+    here routes a one-line command through a heavyweight agent, the demotion has
+    to be tight. It only fires when the analyzer's own plan is a single
+    single-shot tool and the wording carries no signal of planning, iteration,
+    or synthesis -- if the model wanted an agent for a reason it did not put in
+    the wording, this cannot see it, and it stays escalated.
+    """
+    if needs_hermes(message):
+        return False
+
+    tools = list(getattr(analysis, "tools", None) or [])
+
+    if len(tools) != 1 or tools[0] not in SINGLE_SHOT_TOOLS:
+        return False
+
+    # A multi-step plan or a synthesised deliverable contradicts the demotion
+    # even when it somehow named only one tool.
+    if getattr(analysis, "action", "") in _DELIVERABLE_ACTIONS:
+        return False
+
+    return True
+
+
+_DELIVERABLE_ACTIONS = frozenset({"plan", "research", "review", "implement", "analyze"})
+
+
 def check(analysis, message, reason_prefix="model"):
     """Return ``(delegate, reason)`` for a request.
 
-    Only escalates. A model that says delegate stays delegate, and a model that
-    says handle stays handle unless the wording plainly needs an agent.
+    Escalates on demand, and demotes the narrow case where the model escalated
+    something it had itself scoped to a single tool call. Anything ambiguous
+    stays with HERMES, because a slower correct answer beats a wrong fast one.
     """
     if analysis.delegate:
+        if can_demote(analysis, message):
+            return False, (
+                f"{reason_prefix}: escalated, but scoped to a single "
+                f"{analysis.tools[0]} call, so SAGE handles it"
+            )
+
         return True, f"{reason_prefix}: flagged as needing an agent"
 
     if needs_hermes(message):
