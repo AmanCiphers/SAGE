@@ -1,5 +1,5 @@
 class Decision:
-    def __init__(self, type, target=None, task=None):
-        self.type = type
-        self.target = target
+    def __init__(self, handler, model=None, task=None):
+        self.handler = handler
+        self.model = model
         self.task = task

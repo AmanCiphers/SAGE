@@ -5,13 +5,13 @@ class DecisionMaker:
     def decide(self, analysis, original_message):
         if analysis.delegate:
             return Decision(
-                type="delegate",
-                target=analysis.target,
+                handler="hermes",
+                model="nvidia/nemotron-3-ultra-550b-a55b",
                 task=original_message
             )
 
         return Decision(
-            type="handle",
-            target="sage",
+            handler="sage",
+            model="nvidia/nemotron-3-ultra-550b-a55b",
             task=original_message
         )

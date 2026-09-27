@@ -15,7 +15,7 @@ class LLMClient:
 
         self.model = "nvidia/nemotron-3-ultra-550b-a55b"
 
-    def chat(self, messages):
+    def chat(self, messages, model=None):
         messages = [
             {
                 "role": "system",
@@ -25,7 +25,7 @@ class LLMClient:
         ]
 
         response = self.client.chat.completions.create(
-            model=self.model,
+            model= model or self.model,
             messages=messages
         )
 

@@ -5,7 +5,7 @@ class Handler:
     def __init__(self):
         self.llm = LLMClient()
 
-    def handle(self, message, conversation=None):
+    def handle(self, message, conversation=None, model=None):
         messages = []
 
         if conversation:
@@ -16,4 +16,4 @@ class Handler:
             "content": message
         })
 
-        return self.llm.chat(messages)
+        return self.llm.chat(messages, model=model)
