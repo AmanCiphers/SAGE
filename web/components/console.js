@@ -20,9 +20,10 @@ const TONE = {
   sage: { text: "text-zinc-400", tag: "text-zinc-700" },
   tool: { text: "text-zinc-600", tag: "text-zinc-800" },
   sys: { text: "text-zinc-600", tag: "text-zinc-800" },
+  say: { text: "text-zinc-300", tag: "text-emerald-800" },
 };
 
-const TAG = { in: ">", sage: "sage", tool: "log", sys: "::" };
+const TAG = { in: ">", sage: "sage", tool: "log", sys: "::", say: "say" };
 
 // SAGE answers in markdown, so the tape has to render it rather than show the
 // raw "#" and "**". Only applied to sealed lines: re-parsing on every stream
@@ -304,6 +305,13 @@ export default function Console() {
         append("sage", payload.delta);
         outChars += payload.delta.length;
         sawText = true;
+      }
+
+      if (payload.say) {
+        // The spoken companion to the answer above it. Already plain prose, so
+        // it renders as text rather than markdown.
+        push("say", payload.say);
+        return;
       }
 
       if (payload.done) {

@@ -8,7 +8,7 @@ const nextConfig = {
       { source: "/chat/stream", destination: `${BACKEND}/chat/stream` },
       { source: "/chat", destination: `${BACKEND}/chat` },
       { source: "/info", destination: `${BACKEND}/info` },
-      { source: "/api/health", destination: `${BACKEND}/` },
+      { source: "/api/health", destination: `${BACKEND}/health` },
     ];
   },
 };

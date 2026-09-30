@@ -185,3 +185,12 @@ button:disabled {
     opacity: 0.3;
     cursor: default;
 }
+
+/* The spoken companion to the answer above it. */
+.message.spoken {
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 2px solid #1f6f4a;
+  color: #8fd6b4;
+  font-style: italic;
+}

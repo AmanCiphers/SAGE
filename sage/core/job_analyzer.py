@@ -3,7 +3,7 @@ import re
 
 from sage.core import capabilities
 from sage.core.analysis import KNOWN_TOOLS, TaskAnalysis
-from sage.core.llm import LLMClient
+from sage.core.llm import ANALYZER_MODEL, LLMClient
 
 SYSTEM = (
     "You are a request classifier inside the SAGE assistant. "
@@ -41,7 +41,7 @@ ATTEMPTS = 2
 class Analyzer:
     def __init__(self, llm=None, surface="cli", local_tools=True, store=None,
                  conversation_id=None):
-        self.llm = llm or LLMClient()
+        self.llm = llm or LLMClient(model=ANALYZER_MODEL)
         self.surface = surface
         self.local_tools = local_tools
         self.store = store
@@ -106,9 +106,21 @@ class Analyzer:
             except (ValueError, TypeError) as error:
                 last_error = error
                 print(f"[ANALYZER] Bad JSON (attempt {attempt + 1}): {error}")
+            except Exception as error:  # noqa: BLE001 - deliberate
+                # A 429, 503, or timeout from the provider must not take the
+                # turn down with it. The result is just as unusable as bad
+                # JSON, so it degrades the same way -- and routing.check still
+                # applies its own rules to the fallback, so a 503 costs
+                # intelligence, not correctness.
+                last_error = error
+                print(
+                    f"[ANALYZER] Model call failed "
+                    f"(attempt {attempt + 1}): {type(error).__name__}"
+                )
 
-        # Fail closed: a malformed analysis must never trigger a subprocess
-        # or an unrequested network call.
+        # Fail closed: a malformed analysis -- or no analysis at all, because
+        # the provider was down -- must never trigger a subprocess or an
+        # unrequested network call.
         print("[ANALYZER] Falling back to direct handling.")
         return TaskAnalysis(intent=message, action=message, delegate=False, target=None, tools=[])
 

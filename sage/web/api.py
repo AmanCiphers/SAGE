@@ -14,6 +14,7 @@ from sage.core.handler import Handler
 from sage.core.job import JobStatus
 from sage.core.llm import DEFAULT_MODEL
 from sage.core.orchestrator import Orchestrator
+from sage.core.spoken import SpokenSummarizer
 from sage.tasks import get_runtime
 from sage.tools import registry
 
@@ -107,9 +108,38 @@ def _save_assistant(text, status=None):
     db.add_message(conversation_id, "assistant", text)
 
 
+def _spoken(answer, question):
+    """The short line a voice mode would read out, for a finished turn.
+
+    Only completed answers get one. A parked approval has not run yet and a
+    failed turn has nothing to report, and either way a confident "all done"
+    line would be a claim about work that never happened.
+
+    The guarantee is made here rather than inside the summarizer: this is the
+    boundary where a cosmetic extra could take down a turn that already
+    succeeded, so nothing is allowed to escape.
+    """
+    try:
+        return SpokenSummarizer().summarize(answer, question)
+    except Exception as error:
+        print(f"[SPOKEN] unavailable: {type(error).__name__}")
+        return None
+
+
 @app.get("/")
 def home():
     return FileResponse("sage/web/static/index.html")
+
+
+@app.get("/health")
+def health():
+    """Liveness for the console poll.
+
+    Separate from ``/`` on purpose: the poll used to resolve here, which meant
+    every five seconds asked for the whole page and logged a line, and a
+    "healthy" answer was really just "the file exists".
+    """
+    return {"ok": True}
 
 
 @app.get("/info")
@@ -134,9 +164,12 @@ def chat(request: ChatRequest):
 
     _save_assistant(job.result, job.status)
 
-    payload = {"response": job.result or "", "status": job.status.value}
+    # Always present, empty when there is nothing to speak, so a client can
+    # read response.summary without first checking the status.
+    payload = {"response": job.result or "", "status": job.status.value, "summary": ""}
 
     if job.status is JobStatus.COMPLETED:
+        payload["summary"] = _spoken(job.result, request.message) or ""
         return payload
 
     if job.status is JobStatus.NEEDS_APPROVAL:
@@ -230,6 +263,15 @@ def chat_stream(request: ChatRequest):
 
         yield _sse(done)
 
+        # A separate frame after done, so the full answer seals on screen
+        # immediately and the spoken line lands just behind it rather than
+        # holding the stream open.
+        if (final or {}).get("status") == JobStatus.COMPLETED.value:
+            line = _spoken((final or {}).get("response"), request.message)
+
+            if line:
+                yield _sse({"say": line})
+
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
@@ -280,11 +322,17 @@ def chat_approve(request: ApprovalRequest):
 
     _save_assistant(job.result, job.status)
 
-    return {
+    payload = {
         "status": job.status.value,
         "response": job.result or "",
         "error": job.error,
+        "summary": "",
     }
+
+    if job.status is JobStatus.COMPLETED:
+        payload["summary"] = _spoken(job.result, pending.task) or ""
+
+    return payload
 
 
 @app.get("/notifications")

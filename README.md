@@ -55,6 +55,48 @@ SAGE_API=http://127.0.0.1:8000 .venv/bin/python -m uvicorn sage.web.api:app --po
 `SAGE_API` is read at build time by `web/next.config.mjs`, so rebuild the
 front end after changing it.
 
+### Two-part answers
+
+Every finished turn produces two things: the real response, and a short
+conversational line meant to be heard.
+
+| Surface | Real response | Spoken line |
+| --- | --- | --- |
+| `POST /chat` | `response` | `summary` |
+| `POST /chat/stream` | `delta` frames, then `done` | a `say` frame after `done` |
+| `POST /chat/approve` | `response` | `summary` |
+
+`summary` is always present, empty when there is nothing to say. A parked
+approval or a failed turn never gets one, because "that is done, sir" over
+work that never ran is a lie.
+
+The line is built for speech rather than for reading, which drives most of
+`sage/core/spoken.py`: markdown, emoji, bullets, code, paths and URLs are all
+stripped after generation, so a model that ignores the instruction still
+produces something speakable, and it is capped at 32 words. When the answer is
+too dense to speak, it points at the screen instead of reciting it. A single
+verdict or one key number is still worth speaking, so those come through.
+
+This is the field a voice mode will read. Nothing is wired to a speech engine
+yet, and generating the line is best-effort: a failure leaves the real answer
+untouched.
+
+### Models
+
+| Step | Default | Why |
+| --- | --- | --- |
+| Routing analyzer | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | Emits one small JSON object per turn |
+| Tool loop, HERMES | `nvidia/nemotron-3-ultra-550b-a55b` | Does the actual work |
+
+`routing.py` overrides the analyzer's delegate flag in both directions with
+regex, so the analyzer proposes a route rather than deciding it. That is what
+makes the cheap model safe: a wrong proposal is corrected deterministically,
+and a provider failure degrades to direct handling instead of failing the
+turn. Override with `SAGE_ANALYZER_MODEL`.
+
+Note that most models in the NVIDIA model list have no deployment behind them
+and return 404 on `/chat/completions`. Only three of 28 probed were live.
+
 Tests:
 
 ```bash
@@ -75,6 +117,7 @@ The suite is fully mocked — no NVIDIA, Tavily, or HERMES calls.
 | `SAGE_KEEPALIVE` | no | Seconds between SSE keepalive comments |
 
 `.env` is loaded on import and is git-ignored.
+
 
 ## Tools
 

@@ -6,6 +6,8 @@ misroute, so they are pinned rather than spot-checked.
 
 import json
 import os
+from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -45,6 +47,7 @@ KEEP = [
     "write me a haiku about rain",
 ]
 
+from sage.core.llm import ANALYZER_MODEL, DEFAULT_MODEL, LLMClient
 
 class TestRouting:
     @pytest.mark.parametrize("message", ESCALATE)
@@ -408,3 +411,197 @@ class TestChatHistoryTool:
         actions = registry.build_actions(runtime=False)
 
         assert "error" in actions["chat_history"]()
+
+
+class TestAnalyzerModel:
+    """The analyzer is a classifier, so it runs on a small model.
+
+    DEFAULT_MODEL is a 550B meant for the turn that does the actual work. The
+    analyzer runs on every turn to emit one small JSON object, and
+    routing.check() overrides its delegate flag in both directions with regex,
+    so the heavyweight model was spending a full-strength call on a
+    classification step.
+    """
+
+    def test_analyzer_defaults_to_the_small_model(self):
+        from sage.core.job_analyzer import Analyzer
+
+        assert LLMClient().model != LLMClient(model=ANALYZER_MODEL).model
+        assert Analyzer().llm.model == ANALYZER_MODEL
+
+    def test_analyzer_model_is_not_the_default_work_model(self):
+        # Guards the point of the override: if these ever converge, the
+        # downshift silently stops happening and nobody notices.
+        assert ANALYZER_MODEL != DEFAULT_MODEL
+
+    def test_analyzer_model_is_overridable(self):
+        # Read the way the module does, so a stale constant cannot pass.
+        import importlib
+        from sage.core import llm
+
+        with mock.patch.dict(os.environ, {"SAGE_ANALYZER_MODEL": "some/other-model"}):
+            reloaded = importlib.reload(llm)
+
+        try:
+            assert reloaded.ANALYZER_MODEL == "some/other-model"
+        finally:
+            importlib.reload(llm)
+
+    def test_provider_failure_degrades_instead_of_raising(self):
+        # A 429/503/timeout on the classification call must not 500 the turn.
+        # The analyzer only ever failed closed on malformed JSON, so an
+        # unreachable provider propagated out and killed the request.
+        from sage.core.job_analyzer import Analyzer
+
+        calls = []
+
+        class Down:
+            def chat(self, *a, **kw):
+                calls.append(1)
+                raise RuntimeError("503 Resource exhausted")
+
+        result = Analyzer(llm=Down()).analyze("open terminal")
+
+        assert len(calls) == 2  # retried, then gave up
+        assert result.delegate is False
+        assert result.tools == []
+
+    def test_fallback_still_routes_by_the_deterministic_rules(self):
+        # Degrading the model must not degrade routing: an escalated request
+        # still reaches HERMES on wording alone.
+        from sage.core.job_analyzer import Analyzer
+        from sage.core.routing import check
+
+        class Down:
+            def chat(self, *a, **kw):
+                raise RuntimeError("503")
+
+        analysis = Analyzer(llm=Down()).analyze(
+            "Research the trade-offs between Postgres and MySQL "
+            "and give me a recommendation."
+        )
+
+        assert check(analysis, analysis.intent)[0] is True
+
+
+class TestToolBudgetExhaustion:
+    """Running out of rounds must not throw away a turn that did its work.
+
+    A repo survey ran eight successful bash calls and then failed with an
+    empty response, because the model never got round to writing the answer
+    and the loop discarded everything it had gathered. The answer is the last
+    thing missing, so the loop now asks for it.
+    """
+
+    def _loop(self, llm, **kw):
+        from sage.tools.loop import run_tool_loop
+
+        # A tool name the registry refuses, so the loop exercises its own
+        # control flow without running anything on the machine.
+        return list(
+            run_tool_loop(
+                llm=llm,
+                message="break down the repo",
+                actions={"chat_history": lambda a: {}},
+                **kw,
+            )
+        )
+
+    def test_answers_from_what_was_already_gathered(self):
+        from sage.core.llm import LLMClient
+        from sage.tools.loop import MAX_ITERATIONS
+
+        class Endless:
+            """Never volunteers a final answer, only more tool calls."""
+
+            def __init__(self):
+                self.n = 0
+                self.final_calls = []
+
+            def stream_events(self, messages, model=None, system=None, tools=None):
+                self.n += 1
+
+                if tools is None:
+                    # The forced final pass: tools withdrawn, so this is the
+                    # write-up rather than another round.
+                    self.final_calls.append(messages[-1]["content"])
+                    yield {"type": "text", "delta": "Here is the breakdown: 12 files."}
+                    yield {"type": "done", "message": {"content": "Here is the breakdown: 12 files."}}
+                    return
+
+                call = {
+                    "id": f"c{self.n}",
+                    "function": {"name": "chat_history", "arguments": "{}"},
+                }
+                yield {"type": "done", "message": {"content": "", "tool_calls": [call]}}
+
+        llm = Endless()
+        events = self._loop(llm)
+
+        done = events[-1]
+        assert done["type"] == "done"
+        assert "breakdown" in done["content"]
+        assert "error" not in done
+
+    def test_forced_answer_withholds_tools(self):
+        from sage.tools.loop import OUT_OF_BUDGET
+
+        class AlwaysToolCall:
+            def __init__(self):
+                self.saw_tools = []
+
+            def stream_events(self, messages, model=None, system=None, tools=None):
+                self.saw_tools.append(tools)
+
+                if tools is None:
+                    yield {"type": "done", "message": {"content": "Answered."}}
+                    return
+
+                call = {"id": "c", "function": {"name": "chat_history", "arguments": "{}"}}
+                yield {"type": "done", "message": {"content": "", "tool_calls": [call]}}
+
+        llm = AlwaysToolCall()
+        self._loop(llm)
+
+        # A ninth round would mean a ninth destructive-command surface, and the
+        # whole point is that the budget is final.
+        assert llm.saw_tools[-1] is None
+        assert any(tools for tools in llm.saw_tools[:-1])
+
+    def test_forced_answer_does_not_ask_for_more_tools(self):
+        class AlwaysToolCall:
+            def __init__(self):
+                self.notices = []
+
+            def stream_events(self, messages, model=None, system=None, tools=None):
+                if tools is None:
+                    self.notices.append(messages[-1]["content"])
+                    yield {"type": "done", "message": {"content": "Answered."}}
+                    return
+
+                call = {"id": "c", "function": {"name": "chat_history", "arguments": "{}"}}
+                yield {"type": "done", "message": {"content": "", "tool_calls": [call]}}
+
+        llm = AlwaysToolCall()
+        self._loop(llm)
+
+        notice = llm.notices[0].lower()
+        assert "final answer now" in notice
+        assert "do not ask for more tool calls" in notice
+
+    def test_still_reports_failure_when_there_is_nothing_to_say(self):
+        # A model that stays silent gets a real error rather than an empty
+        # success, so the turn is not mistaken for an answer.
+        class Silent:
+            def stream_events(self, messages, model=None, system=None, tools=None):
+                if tools is None:
+                    yield {"type": "done", "message": {"content": "   "}}
+                    return
+
+                call = {"id": "c", "function": {"name": "chat_history", "arguments": "{}"}}
+                yield {"type": "done", "message": {"content": "", "tool_calls": [call]}}
+
+        done = self._loop(Silent())[-1]
+
+        assert done["content"] == ""
+        assert "without a final answer" in done["error"]

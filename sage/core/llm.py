@@ -11,6 +11,15 @@ load_dotenv()
 BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
 
+# The analyzer is a single-call JSON classifier, not a reasoning step, and
+# routing.check() overrides its delegate flag in both directions with regex --
+# so a small fast model is enough here, and the heavyweight one is worth
+# spending only on the turn that actually does the work. Same family as
+# DEFAULT_MODEL, so prompt behaviour matches.
+ANALYZER_MODEL = os.environ.get(
+    "SAGE_ANALYZER_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+)
+
 
 class LLMClient:
     def __init__(self, model=None):

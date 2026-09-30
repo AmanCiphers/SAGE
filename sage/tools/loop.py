@@ -12,6 +12,18 @@ from sage.tools import registry
 
 MAX_ITERATIONS = 8
 
+# Sent when the round budget runs out. Naming the failure mode matters: a bare
+# "you are out of tools" tends to produce a description of what it *would* do
+# next, which is the behaviour that caused the wasted turn in the first place.
+OUT_OF_BUDGET = (
+    "You are out of tool calls, and the results above are everything you "
+    "gathered. Give the user your final answer now, from those results. "
+    "Report what you found, including the details of each item they asked "
+    "for, since this is the only answer they will get. Do not propose the "
+    "next step, do not ask for more tool calls, and do not say you are out of "
+    "budget."
+)
+
 OPERATING_RULES = """You run on the user's Mac (zsh) and can act on it.
 
 Tools available to you:
@@ -120,6 +132,32 @@ def run_tool_loop(llm, message, conversation=None, model=None, actions=None,
                     "content": json.dumps(result, default=str)[:20000],
                 }
             )
+
+    # Out of rounds, but every result is already in `messages` and only the
+    # write-up is missing. Ask for it with tools withdrawn, so the model cannot
+    # start a ninth round and the gathered work is not discarded along with the
+    # turn. Eight successful calls that end in "failed" with nothing to show is
+    # the worst outcome available when all the work actually succeeded.
+    final_parts = []
+    final = None
+
+    for event in llm.stream_events(
+        [*messages, {"role": "user", "content": OUT_OF_BUDGET}],
+        model=model,
+        system=system,
+        tools=None,
+    ):
+        if event["type"] == "text":
+            final_parts.append(event["delta"])
+            yield {"type": "text", "delta": event["delta"]}
+        elif event["type"] == "done":
+            final = event["message"]
+
+    content = (final or {}).get("content") or "".join(final_parts).strip()
+
+    if content.strip():
+        yield {"type": "done", "content": content}
+        return
 
     yield {
         "type": "done",
