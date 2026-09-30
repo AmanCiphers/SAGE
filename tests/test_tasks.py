@@ -4,7 +4,13 @@ import time
 
 import pytest
 
-from sage.tasks import Scheduler, TaskManager, TaskStore
+from sage.tasks import (
+    Scheduler,
+    TaskManager,
+    TaskStore,
+    current_task_context,
+    get_runtime,
+)
 
 
 @pytest.fixture
@@ -190,6 +196,156 @@ class TestTaskManager:
         manager = TaskManager(store, runner=None)
         with pytest.raises(RuntimeError):
             manager.start("x")
+
+
+class TestResultIsStoredWhole:
+    """A worker's answer is the deliverable, so it is not trimmed on the way in.
+
+    A real repo breakdown came back at 4,127 characters and was silently halved
+    by a 2,000-char cap, leaving the stored result different from what ran.
+    """
+
+    def test_a_long_result_is_not_truncated(self, store):
+        long_result = "x" * 4127
+        manager = TaskManager(store, runner=lambda goal, report: long_result)
+        task_id = manager.start("long answer")
+
+        _wait_for(store, task_id)
+        assert store.get_task(task_id)["result"] == long_result
+
+    def test_task_status_clips_only_what_the_model_reads(self, store):
+        from sage.tools import registry
+
+        manager = TaskManager(store, runner=lambda goal, report: "y" * 4000)
+        task_id = manager.start("big answer")
+        _wait_for(store, task_id)
+
+        actions = registry.build_actions(manager=manager, store=store, runtime=False)
+        view = actions["task_status"](task_id=task_id)["tasks"][0]
+
+        assert view["result_chars"] == 4000
+        assert len(view["result"]) == registry.TASK_RESULT_PREVIEW
+        # Clipped for the model, intact on disk.
+        assert len(store.get_task(task_id)["result"]) == 4000
+
+    def test_a_short_result_is_untouched_by_the_preview(self, store):
+        from sage.tools import registry
+
+        manager = TaskManager(store, runner=lambda goal, report: "short and whole")
+        task_id = manager.start("small")
+        _wait_for(store, task_id)
+
+        actions = registry.build_actions(manager=manager, store=store, runtime=False)
+        view = actions["task_status"](task_id=task_id)["tasks"][0]
+
+        assert view["result"] == "short and whole"
+        assert "result_chars" not in view
+
+
+class TestWorkerInheritsTheDispatchSurface:
+    """A worker runs under the policy of the surface that started it.
+
+    The runner used to hardcode surface="cli", so a task started from a
+    restricted web surface gained the local tool access that surface withheld.
+    """
+
+    def test_context_reaches_the_runner(self, store):
+        seen = {}
+
+        def runner(goal, report):
+            seen.update(current_task_context())
+            return "ok"
+
+        manager = TaskManager(store, runner=runner)
+        task_id = manager.start("restricted work", surface="web", local_tools=False)
+        _wait_for(store, task_id)
+
+        assert seen["surface"] == "web"
+        assert seen["local_tools"] is False
+
+    def test_context_is_cleared_after_the_task_ends(self, store):
+        def runner(goal, report):
+            assert current_task_context()["surface"] == "web"
+            raise RuntimeError("boom")
+
+        manager = TaskManager(store, runner=runner)
+        task_id = manager.start("fails", surface="web")
+        _wait_for(store, task_id)
+
+        assert current_task_context() == {}
+
+    def test_a_sibling_task_does_not_inherit_context(self, store):
+        seen = []
+
+        def runner(goal, report):
+            seen.append(current_task_context().get("surface"))
+            return "ok"
+
+        manager = TaskManager(store, runner=runner)
+        first = manager.start("one", surface="web")
+        second = manager.start("two", surface="cli")
+        _wait_for(store, first)
+        _wait_for(store, second)
+
+        assert sorted(seen) == ["cli", "web"]
+
+    def test_the_default_runner_does_not_hardcode_cli(self, store, monkeypatch):
+        import sage.core.orchestrator as orchestrator_module
+        from sage.tasks import _default_runner
+
+        captured = {}
+
+        class FakeOrchestrator:
+            def __init__(self, surface="cli", local_tools=True, store=None,
+                         conversation_id=None):
+                captured["surface"] = surface
+                captured["local_tools"] = local_tools
+
+            def run(self, goal, surface="cli"):
+                captured["run_surface"] = surface
+                return type("FakeJob", (), {"result": "ok"})()
+
+        monkeypatch.setattr(orchestrator_module, "Orchestrator", FakeOrchestrator)
+
+        manager = TaskManager(store, runner=_default_runner)
+        task_id = manager.start("web work", surface="web", local_tools=False)
+        _wait_for(store, task_id)
+
+        assert captured["surface"] == "web"
+        assert captured["local_tools"] is False
+        assert captured["run_surface"] == "web"
+
+
+class TestSharedDatabasePath:
+    def test_the_store_honours_sage_db_path(self, tmp_path, monkeypatch):
+        # Database resolves this too, so a test or a second instance must not
+        # split conversation history and task rows across two files.
+        target = tmp_path / "shared.db"
+        monkeypatch.setenv("SAGE_DB_PATH", str(target))
+
+        store = TaskStore()
+
+        assert store.path == str(target)
+        assert target.exists()
+
+    def test_an_explicit_path_still_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SAGE_DB_PATH", str(tmp_path / "env.db"))
+        explicit = tmp_path / "explicit.db"
+
+        assert TaskStore(str(explicit)).path == str(explicit)
+
+    def test_get_runtime_defaults_to_the_env_path(self, tmp_path, monkeypatch):
+        import sage.tasks as tasks_module
+
+        target = tmp_path / "runtime.db"
+        monkeypatch.setenv("SAGE_DB_PATH", str(target))
+        # get_runtime is a process-wide singleton that other tests populate, so
+        # it has to be cleared for this assertion to be about the env path.
+        monkeypatch.setattr(tasks_module, "_runtime", None)
+
+        store, _, _ = get_runtime(start_scheduler=False)
+
+        assert store.path == str(target)
 
 
 def _wait_for(store, task_id, timeout=5):

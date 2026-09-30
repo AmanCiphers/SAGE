@@ -5,8 +5,10 @@ const nextConfig = {
   reactStrictMode: true,
   async rewrites() {
     return [
+      { source: "/chat/approve", destination: `${BACKEND}/chat/approve` },
       { source: "/chat/stream", destination: `${BACKEND}/chat/stream` },
       { source: "/chat", destination: `${BACKEND}/chat` },
+      { source: "/notifications", destination: `${BACKEND}/notifications` },
       { source: "/info", destination: `${BACKEND}/info` },
       { source: "/api/health", destination: `${BACKEND}/health` },
     ];

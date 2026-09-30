@@ -197,6 +197,12 @@ class Orchestrator:
                             surface=surface,
                             approved_command=approved_command,
                             conversation_id=self.conversation_id,
+                            # Resolved for this call rather than read off
+                            # self, because a caller may pass a surface
+                            # stricter than the one this orchestrator was built
+                            # for. A worker must inherit what the caller was
+                            # actually allowed, not what SAGE is.
+                            local_tools=self._may_execute(surface),
                         ):
                             if event["type"] == "text":
                                 chunks.append(event["delta"])

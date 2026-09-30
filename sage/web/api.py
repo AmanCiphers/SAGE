@@ -54,9 +54,36 @@ def _notify(reminder):
     db.add_notification("reminder", reminder["title"])
 
 
-# Built early so the scheduler can deliver reminders fired later, and so the
-# tool table the handler builds is the same runtime the API reports on.
-task_store, task_manager, _ = get_runtime(notify=_notify)
+def _task_finished(row, status):
+    """Tell the user a background task ended.
+
+    The body is a pointer, never the result. The full text stays in the worker
+    space: it can run to thousands of characters, and a notification is not
+    somewhere a whole answer belongs.
+    """
+    if not row:
+        return
+
+    title = row.get("title") or "a background job"
+
+    if status == "done":
+        body = f"Finished: {title}"
+    elif status == "needs_approval":
+        body = f"Waiting on your approval: {title}"
+    elif status == "cancelled":
+        body = f"Stopped: {title}"
+    else:
+        body = f"Could not finish: {title}"
+
+    db.add_notification("task_done", f"{body} (task {row['id']})")
+
+
+# Built early so the scheduler can deliver reminders fired later, so a finished
+# task can reach the client, and so the tool table the handler builds is the
+# same runtime the API reports on.
+task_store, task_manager, _ = get_runtime(
+    notify=_notify, on_task_complete=_task_finished
+)
 
 orchestrator = Orchestrator(
     surface="web", local_tools=LOCAL_TOOLS, store=db, conversation_id=conversation_id,

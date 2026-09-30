@@ -279,13 +279,43 @@ def chat_history(store, conversation_id, limit=None):
     return {"count": len(turns), "messages": turns}
 
 
+# A worker's result is stored whole, but task_status hands it back as a tool
+# result and an unbounded one would shove the conversation context around. Bound
+# what the model reads, and say how much was withheld rather than clipping it
+# quietly.
+TASK_RESULT_PREVIEW = 1500
+
+
+def _task_view(row):
+    """A task row as the model should see it, with an oversized result clipped."""
+    if not row:
+        return row
+
+    view = dict(row)
+    result = view.get("result") or ""
+
+    if len(result) > TASK_RESULT_PREVIEW:
+        view["result"] = result[:TASK_RESULT_PREVIEW]
+        view["result_chars"] = len(result)
+        view["note"] = (
+            "result clipped here; the full text is in the worker space, "
+            "not lost"
+        )
+
+    return view
+
+
 def build_actions(manager=None, store=None, runtime=True, conversation_id=None,
-                  chat_store=None):
+                  chat_store=None, surface="cli", local_tools=True):
     """Bind the ACTIONS table to live task machinery.
 
     The task tools need a store, so the process-wide runtime is created on
     demand unless one is passed in. Pass ``runtime=False`` for tests that want
     the tool table without touching the database or starting the scheduler.
+
+    ``surface`` and ``local_tools`` describe the caller, not the worker: they
+    are handed to the task so a background goal runs under the policy of the
+    surface that started it.
     """
     if runtime and store is None:
         from sage.tasks import get_runtime
@@ -314,7 +344,7 @@ def build_actions(manager=None, store=None, runtime=True, conversation_id=None,
             }
 
         def _create_task(title):
-            from sage.tasks import in_task_worker
+            from sage.tasks import WorkerLimit, in_task_worker
 
             if in_task_worker():
                 # Otherwise a task whose model calls create_task again grows
@@ -323,8 +353,24 @@ def build_actions(manager=None, store=None, runtime=True, conversation_id=None,
                     "error": "already running inside a task; a task cannot start another",
                 }
 
+            try:
+                task_id = manager.start(
+                    title,
+                    surface=surface,
+                    local_tools=local_tools,
+                    conversation_id=conversation_id,
+                    chat_store=chat_store,
+                )
+            except WorkerLimit as limit:
+                # A cap is not a failure of the request, so it is reported as
+                # something the model can act on rather than a dead end.
+                return {"error": str(limit), "at_capacity": True}
+
             return {
-                "task_id": manager.start(title),
+                # The worker inherits the surface it was dispatched from, so a
+                # task started from a restricted surface cannot quietly gain
+                # the permissions that surface withheld.
+                "task_id": task_id,
                 "note": "worker spawned in the background",
             }
 
@@ -332,9 +378,9 @@ def build_actions(manager=None, store=None, runtime=True, conversation_id=None,
             {
                 "create_task": _create_task,
                 "task_status": lambda task_id=None: {
-                    "tasks": [store.get_task(task_id)]
+                    "tasks": [_task_view(store.get_task(task_id))]
                     if task_id
-                    else store.list_tasks()
+                    else [_task_view(t) for t in store.list_tasks()]
                 },
                 "create_reminder": lambda title, due_in_seconds, repeat_interval=0: {
                     "reminder_id": store.add_reminder(title, due_in_seconds, repeat_interval),

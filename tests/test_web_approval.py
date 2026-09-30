@@ -1,11 +1,28 @@
 """Web approval round trip, with the model stubbed so it cannot flake."""
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from sage.core.job import JobStatus
+
+
+def test_every_console_route_is_rewritten_to_the_backend():
+    """The console talks to paths the backend serves, and Next has to pass them on.
+
+    /chat/approve and /notifications were missing, so an approval reply and a
+    completion notification both landed on Next and 404'd instead of reaching
+    the API. A dropped rewrite is invisible until the exact flow is used, which
+    is the worst time to find it.
+    """
+    config = Path(__file__).resolve().parents[1] / "web" / "next.config.mjs"
+    text = config.read_text()
+
+    for route in ("/chat", "/chat/stream", "/chat/approve", "/notifications",
+                  "/info", "/api/health"):
+        assert f'source: "{route}"' in text, f"{route} is not rewritten"
 
 
 class StubHandler:
@@ -16,7 +33,7 @@ class StubHandler:
         self.replayed = []
 
     def run(self, message, conversation=None, model=None, surface="cli",
-            approved_command=None, conversation_id=None):
+            approved_command=None, conversation_id=None, local_tools=True):
         self.replayed.append(approved_command)
 
         if approved_command is None:

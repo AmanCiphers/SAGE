@@ -35,13 +35,19 @@ class Handler:
         return content
 
     def run(self, message, conversation=None, model=None, surface="cli",
-            approved_command=None, conversation_id=None):
-        """Yield tool-loop events for a request handled by SAGE itself."""
+            approved_command=None, conversation_id=None, local_tools=True):
+        """Yield tool-loop events for a request handled by SAGE itself.
+
+        ``local_tools`` is the resolved policy for this call, which the task
+        tools hand to any worker they start.
+        """
         actions = registry.build_actions(
             manager=self.task_manager, store=self.task_store,
             conversation_id=conversation_id, chat_store=self.chat_store,
+            surface=surface, local_tools=local_tools,
         ) if self.task_manager else registry.build_actions(
-            conversation_id=conversation_id, chat_store=self.chat_store
+            conversation_id=conversation_id, chat_store=self.chat_store,
+            surface=surface, local_tools=local_tools,
         )
 
         return run_tool_loop(

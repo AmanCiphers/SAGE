@@ -382,7 +382,7 @@ class RefusesDelete:
         self.approved = approved
 
     def run(self, message, conversation=None, model=None, surface="cli",
-            approved_command=None, conversation_id=None):
+            approved_command=None, conversation_id=None, local_tools=True):
         self.seen_approval = approved_command
         command = "rm -rf /tmp/sage-victim"
         yield {"type": "tool_pending", "name": "bash", "arguments": {}}
@@ -574,7 +574,7 @@ class TestFabricatedResultRetry:
             self.tasks = []
 
         def run(self, message, conversation=None, model=None, surface="cli",
-                approved_command=None, conversation_id=None):
+                approved_command=None, conversation_id=None, local_tools=True):
             self.calls += 1
             self.tasks.append(message)
 
@@ -596,7 +596,7 @@ class TestFabricatedResultRetry:
             self.calls = 0
 
         def run(self, message, conversation=None, model=None, surface="cli",
-                approved_command=None, conversation_id=None):
+                approved_command=None, conversation_id=None, local_tools=True):
             self.calls += 1
             yield {"type": "text", "delta": "Terminal opened (a new window)."}
 
@@ -636,7 +636,7 @@ class TestFabricatedResultRetry:
                 self.calls = 0
 
             def run(self, message, conversation=None, model=None, surface="cli",
-                    approved_command=None, conversation_id=None):
+                    approved_command=None, conversation_id=None, local_tools=True):
                 self.calls += 1
                 yield {
                     "type": "tool", "name": "pc_control", "arguments": {},
